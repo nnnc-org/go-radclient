@@ -24,6 +24,12 @@ import (
 //
 // serverName may be empty, in which case nameMatch is left unknown rather than
 // asserted either way.
+//
+// roots may be nil, meaning no trust anchor was configured, as with
+// --insecure. Everything observable is still reported -- subject, serial,
+// expiry, fingerprint, name match -- but chainValid and valid stay unknown,
+// because without an anchor there is nothing to verify against. Reporting
+// them as false would be a claim we cannot support, and as true a lie.
 func EvaluateServerChain(chain []*x509.Certificate, roots *x509.CertPool, serverName string, now time.Time) CertInfo {
 	ci := notApplicableCert(RoleServer)
 	if len(chain) == 0 {
@@ -38,15 +44,20 @@ func EvaluateServerChain(chain []*x509.Certificate, roots *x509.CertPool, server
 	for _, c := range chain[1:] {
 		intermediates.AddCert(c)
 	}
-	verified, err := leaf.Verify(x509.VerifyOptions{
-		Roots:         roots,
-		Intermediates: intermediates,
-		CurrentTime:   now,
-	})
-	chainValid := err == nil
-	ci.ChainValid = &chainValid
-	if err != nil {
-		ci.VerifyError = strPtr(err.Error())
+
+	var verified [][]*x509.Certificate
+	if roots != nil {
+		var err error
+		verified, err = leaf.Verify(x509.VerifyOptions{
+			Roots:         roots,
+			Intermediates: intermediates,
+			CurrentTime:   now,
+		})
+		chainValid := err == nil
+		ci.ChainValid = &chainValid
+		if err != nil {
+			ci.VerifyError = strPtr(err.Error())
+		}
 	}
 
 	// crypto/tls never sets VerifyOptions.DNSName here, so the name is checked
@@ -57,8 +68,12 @@ func EvaluateServerChain(chain []*x509.Certificate, roots *x509.CertPool, server
 		ci.NameMatch = &nameMatch
 	}
 
-	valid := chainValid && derefBool(ci.ValidNow) && (ci.NameMatch == nil || *ci.NameMatch)
-	ci.Valid = &valid
+	// With no trust anchor, overall validity is unknowable, so it is left
+	// unset rather than guessed.
+	if ci.ChainValid != nil {
+		valid := *ci.ChainValid && derefBool(ci.ValidNow) && (ci.NameMatch == nil || *ci.NameMatch)
+		ci.Valid = &valid
+	}
 
 	// Prefer the chain the verifier built; fall back to what the peer sent.
 	effective := chain

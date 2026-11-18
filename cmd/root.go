@@ -34,6 +34,7 @@ var (
 	maxWriteJitterStr               string
 	maxWriteJitter                  time.Duration
 	radsecUnsafe                    bool
+	insecure                        bool
 	tlsAuthenticationKeyLogFilename string
 	tlsTunnelKeyLogFilename         string
 )
@@ -70,6 +71,10 @@ for most common authentication protocol.`,
 			if !cmd.Flags().Changed("max-send-jitter") {
 				maxWriteJitterStr = "0s"
 			}
+		}
+
+		if insecure {
+			radsecUnsafe = true
 		}
 
 		rawAttrs, err := cmd.Flags().GetStringArray("attrs-to-send")
@@ -189,6 +194,11 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&udpTimeoutStr, "udp-timeout", "5s", "RADIUS/UDP connection response timeout")
 	rootCmd.PersistentFlags().IntVar(&tcpPort, "tcp-port", radius.RadSecTCPPort, "RADIUS/TLS (RadSec) port")
 	rootCmd.PersistentFlags().BoolVar(&radsecUnsafe, "radsec-unsafe", false, "RADIUS/TLS (RadSec) skip server authentication")
+	rootCmd.PersistentFlags().BoolVar(&insecure, "insecure", false, `Do not verify server certificates at any layer. Makes
+--ca-cert and --tunnel-ca-cert optional, ignores the
+RadSec CA argument, and implies --radsec-unsafe.
+Certificates are still reported, but validity cannot be,
+so chain_valid and valid read as unknown, not true.`)
 	rootCmd.PersistentFlags().StringVar(&tlsTimeoutStr, "tls-timeout", "15s", "RADIUS/TLS connection response timeout")
 	rootCmd.PersistentFlags().StringVar(&minWriteJitterStr, "min-send-jitter", "50ms", "Min packet send time-in-between jitter")
 	rootCmd.PersistentFlags().StringVar(&maxWriteJitterStr, "max-send-jitter", "1s", "Max packet send time-in-between jitter")

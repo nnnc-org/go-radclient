@@ -137,8 +137,8 @@ unreachable — which is exactly when you need the warning.
 |---|---|
 | `status` | `observed`, `not_applicable`, or `unavailable`, as above. |
 | `role`, `layer` | `server` or `client`, and which handshake it came from. |
-| `valid` | Chains to the configured CA, inside its validity window, and matches the expected name. **Not** "valid per the system trust store". |
-| `chain_valid` | Whether a trusted chain could be built against the CA given on the command line. |
+| `valid` | Chains to the configured CA, inside its validity window, and matches the expected name. **Not** "valid per the system trust store". `null` under `--insecure`. |
+| `chain_valid` | Whether a trusted chain could be built against the CA given on the command line. `null` under `--insecure`. |
 | `name_match` | Whether the certificate matches the expected server name. `null` when there was no name to check, and for client certificates. Reported even under `--tls-skip-hostname-check`: observed, not enforced. |
 | `valid_now` | Whether the clock is inside `not_before`..`expires_at`. Reported separately from `chain_valid` because an expired certificate also fails chain verification, and "chain invalid" alone does not tell you why. |
 | `key_match` | Client certificates only: whether the configured private key matched. `null` when the file could not be read at all, since that proves nothing about the key. |
@@ -154,6 +154,21 @@ unreachable — which is exactly when you need the warning.
 Certificate details are recorded **even when verification fails**, which is
 what keeps "the server certificate expired" distinguishable from "the server
 was unreachable".
+
+### With `--insecure`
+
+There is no trust anchor, so `chain_valid` and `valid` are reported as `null`
+and `verify_error` stays empty: nothing was verified, and reporting either as
+`false` would be a claim the run cannot support.
+
+Everything observable is still reported -- `subject`, `issuer`, `serial`,
+`sha256`, `not_before`, `expires_at`, `expires_in_seconds`, `valid_now`,
+`name_match` and the full `chain`. Reading the expiry of a server certificate
+without first configuring its CA is the usual reason to use the flag.
+
+That makes it good for inspection and poor for monitoring: an expiry trigger
+still works, but a `chain_valid` trigger can never fire, because the value is
+never observed. Point monitoring at a real CA.
 
 ### `attempts`
 
@@ -171,6 +186,13 @@ which would dominate any latency metric. **`--json` therefore defaults both
 `--min-send-jitter` and `--max-send-jitter` to `0s`**, while still honouring
 either if you pass it explicitly. Whatever jitter does occur is reported in
 `radius.jitter_total_ms`, and every duration has an `_excl_jitter_ms` sibling.
+
+## Passwords
+
+`--json` never prompts for a password. A probe that blocked on a prompt would
+hang until its item timed out, on every run, so a password-based protocol
+invoked without `--password` is a `config_error` with exit code 2 and a
+message saying so. Interactive prompting applies to text mode only.
 
 ## Secrets
 

@@ -333,3 +333,83 @@ func TestJSONRadsecUntrustedServerCert(t *testing.T) {
 		t.Error("peer_cert_rejected must not be set when it was we who refused the chain")
 	}
 }
+
+// --insecure drops the trust requirement so a certificate can be inspected
+// without configuring a CA, which is the point of the flag. Validity then
+// cannot be asserted, and must read as unknown rather than as a failure.
+func TestJSONInsecureReportsCertWithoutCA(t *testing.T) {
+	expiry := time.Now().Add(20 * 24 * time.Hour).Truncate(time.Second)
+	f := newRadsecFixture(t, expiry)
+	// A CA that did not issue the server certificate: without --insecure this
+	// is the untrusted-chain case, so the handshake only succeeds because
+	// verification is skipped.
+	other := newRadsecFixture(t, expiry)
+	port := startRadsecServer(t, f, codeAccessAccept)
+
+	code, doc := runProbe(t,
+		"--json",
+		"--insecure",
+		"--tcp-port", strconv.Itoa(port),
+		"--tls-timeout", "5s",
+		"auth", "tls", "127.0.0.1", other.caPath, f.clientPath, "pap",
+		"--username", "alice", "--password", "hunter2",
+	)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; error = %v", code, get(t, doc, "auth", "error_message"))
+	}
+	if got := get(t, doc, "auth", "success"); got != true {
+		t.Errorf("auth.success = %v, want true: --insecure should let the handshake complete", got)
+	}
+
+	sc := get(t, doc, "tls", "layers", "radsec", "server_cert").(map[string]any)
+	if sc["status"] != "observed" {
+		t.Fatalf("server_cert.status = %v, want observed", sc["status"])
+	}
+	// The whole reason to use --insecure: expiry without a CA.
+	if sc["expires_at"] != float64(expiry.Unix()) {
+		t.Errorf("server_cert.expires_at = %v, want %d", sc["expires_at"], expiry.Unix())
+	}
+	if sc["subject"] != "CN=radsec.example.com" {
+		t.Errorf("server_cert.subject = %v", sc["subject"])
+	}
+	if sc["sha256"] == nil {
+		t.Error("server_cert.sha256 should be reported")
+	}
+	if sc["valid_now"] != true {
+		t.Errorf("server_cert.valid_now = %v, want true", sc["valid_now"])
+	}
+	// Unknown, not false. There was no anchor to verify against, and a false
+	// here would read as a broken server certificate.
+	if sc["chain_valid"] != nil {
+		t.Errorf("server_cert.chain_valid = %v, want null without a CA", sc["chain_valid"])
+	}
+	if sc["valid"] != nil {
+		t.Errorf("server_cert.valid = %v, want null without a CA", sc["valid"])
+	}
+	if sc["verify_error"] != nil {
+		t.Errorf("server_cert.verify_error = %v, want null: nothing was verified", sc["verify_error"])
+	}
+}
+
+// --insecure also means the CA argument need not name a real file.
+func TestJSONInsecureIgnoresCAArgument(t *testing.T) {
+	f := newRadsecFixture(t, time.Now().Add(30*24*time.Hour))
+	port := startRadsecServer(t, f, codeAccessAccept)
+
+	code, doc := runProbe(t,
+		"--json",
+		"--insecure",
+		"--tcp-port", strconv.Itoa(port),
+		"--tls-timeout", "5s",
+		"auth", "tls", "127.0.0.1", "/nonexistent/ca.pem", f.clientPath, "pap",
+		"--username", "alice", "--password", "hunter2",
+	)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; error = %v", code, get(t, doc, "auth", "error_message"))
+	}
+	if got := get(t, doc, "auth", "success"); got != true {
+		t.Errorf("auth.success = %v, want true", got)
+	}
+}

@@ -104,6 +104,12 @@ func dialTLS(address, caCert, clientCert string) (*tls.Conn, error) {
 // error: reporting it as an invalid server certificate would blame the server
 // for an operator mistake.
 func loadCAPool(caCert string) (*x509.CertPool, error) {
+	// --insecure means there is no trust anchor, so the CA argument is not
+	// read at all. A nil pool signals that to the evaluator: an empty one
+	// would instead fail every chain and look like a server problem.
+	if insecure {
+		return nil, nil
+	}
 	content, err := os.ReadFile(caCert)
 	if err != nil {
 		return nil, metrics.Wrap(metrics.StageConfig, metrics.ResultConfigError, err)

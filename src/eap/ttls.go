@@ -35,7 +35,7 @@ func CreateTTLS(session *Session, caCert, tlsVersion, serverName, tlsTunnelKeyLo
 		MinVersion:             t.tlsVersion,
 		MaxVersion:             t.tlsVersion,
 		SessionTicketsDisabled: true,
-		InsecureSkipVerify:     tlsSkipHostnameCheck,
+		InsecureSkipVerify:     tlsSkipHostnameCheck || t.insecure,
 		ServerName:             serverName,
 		VerifyPeerCertificate:  t.verifyCertificateChain,
 		VerifyConnection:       t.recordConnectionState,

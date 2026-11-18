@@ -21,7 +21,14 @@ so the 5s default timeout with retries can exceed a 30s item timeout once
 `--retries` is involved. `--json` already drops the send jitter to zero.
 
 Pass the shared secret from a Zabbix macro (`{$RADIUS.SECRET}`) marked as a
-secret macro, not as literal text in the item key.
+secret macro, not as literal text in the item key. The same goes for
+`--password`, which is **required** for password-based protocols under
+`--json`: the probe will not prompt, and reports a `config_error` instead of
+hanging until the item times out.
+
+Do not use `--insecure` for monitoring. It still reports certificate expiry,
+but `chain_valid` and `valid` become `null` because there is no trust anchor,
+so any trigger on them can never fire. Point the probe at the real CA.
 
 ## Master item
 

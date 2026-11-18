@@ -49,6 +49,9 @@ type TLS struct {
 	// serverName is the identity the peer certificate is expected to carry. It
 	// is used for reporting the name match, never to change verification.
 	serverName string
+	// insecure means no trust anchor was configured, so the peer certificate
+	// is observed and reported but not verified.
+	insecure bool
 	// Layer names which handshake this instance is, so that a run with both an
 	// outer tunnel and an inner EAP-TLS reports them separately.
 	Layer metrics.Layer
@@ -76,17 +79,24 @@ func CreateTLS(session *Session, caCert, tlsVersion string, skipHostnameCheck bo
 }
 
 func internalCreateTLS(session *Session, caCert, tlsVersion string, skipHostnameCheck bool, pt Type) (*TLS, error) {
-	// An unreadable or non-PEM CA file is a config error. Letting it through
-	// would leave an empty pool, and the run would then blame the server for an
-	// invalid certificate chain that is really an operator mistake.
-	content, err := os.ReadFile(caCert)
-	if err != nil {
-		return nil, metrics.Wrap(metrics.StageConfig, metrics.ResultConfigError, err)
-	}
-	rootCAs := x509.NewCertPool()
-	if !rootCAs.AppendCertsFromPEM(content) {
-		return nil, metrics.Wrap(metrics.StageConfig, metrics.ResultConfigError,
-			fmt.Errorf("no certificates found in CA file: %s", caCert))
+	// An empty path means --insecure: there is no trust anchor, so the peer
+	// certificate gets observed and reported but not verified. A nil pool is
+	// what signals that, since leaving it empty instead would fail every
+	// chain.
+	var rootCAs *x509.CertPool
+	if caCert != "" {
+		// An unreadable or non-PEM CA file is a config error. Letting it
+		// through would leave an empty pool, and the run would then blame the
+		// server for an invalid chain that is really an operator mistake.
+		content, err := os.ReadFile(caCert)
+		if err != nil {
+			return nil, metrics.Wrap(metrics.StageConfig, metrics.ResultConfigError, err)
+		}
+		rootCAs = x509.NewCertPool()
+		if !rootCAs.AppendCertsFromPEM(content) {
+			return nil, metrics.Wrap(metrics.StageConfig, metrics.ResultConfigError,
+				fmt.Errorf("no certificates found in CA file: %s", caCert))
+		}
 	}
 
 	var tlsv uint16
@@ -99,8 +109,7 @@ func internalCreateTLS(session *Session, caCert, tlsVersion string, skipHostname
 		tlsv = tls.VersionTLS12
 	}
 
-	err = session.start(pt)
-	if err != nil {
+	if err := session.start(pt); err != nil {
 		return nil, err
 	}
 
@@ -110,6 +119,7 @@ func internalCreateTLS(session *Session, caCert, tlsVersion string, skipHostname
 		tlsVersion:        tlsv,
 		packetType:        pt,
 		skipHostnameCheck: skipHostnameCheck,
+		insecure:          rootCAs == nil,
 	}, nil
 }
 
@@ -138,7 +148,7 @@ func (tt *TLS) Authenticate(certpath, keyLogFilename string) error {
 		ServerName:            h,
 		MinVersion:            tt.tlsVersion,
 		MaxVersion:            tt.tlsVersion,
-		InsecureSkipVerify:    tt.skipHostnameCheck,
+		InsecureSkipVerify:    tt.skipHostnameCheck || tt.insecure,
 		VerifyPeerCertificate: tt.verifyCertificateChain,
 		VerifyConnection:      tt.recordConnectionState,
 		Renegotiation:         tls.RenegotiateNever,
@@ -373,6 +383,13 @@ func (tt *TLS) verifyCertificateChain(rawCerts [][]byte, verifiedChains [][]*x50
 	// serial and expiry.
 	tt.Metrics.RecordServerChain(tt.Layer,
 		metrics.EvaluateServerChain(certs, tt.rootCAs, tt.serverName, time.Now()))
+
+	// With no trust anchor there is nothing to verify against, and failing
+	// here would break the handshake that --insecure was asked for. The
+	// certificate has already been recorded above.
+	if tt.insecure {
+		return nil
+	}
 
 	opts := x509.VerifyOptions{
 		Roots:         tt.rootCAs,

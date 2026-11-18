@@ -124,6 +124,18 @@ $RADIUS_AUTH_COMMAND pap --username $USERNAME --password $PASSWORD
 $RADIUS_AUTH_COMMAND eap-ms-chapv2 --username $USERNAME --password $PASSWORD
 ```
 
+If you leave `--password` off, you will be prompted for it, without echo:
+
+```bash
+$ $RADIUS_AUTH_COMMAND pap --username $USERNAME
+Password for alice:
+```
+
+Prompting is skipped, with an explanation, when there is nowhere to prompt:
+in `--json` mode, and when stdin is not a terminal. A probe that blocked on a
+prompt would hang until its timeout on every run, and reading from a pipe
+would silently consume input meant for something else.
+
 For password-based authentication schemes that run over an internal TLS tunnel, here
 are the commands to test them:
 
@@ -156,6 +168,23 @@ $RADIUS_AUTH_COMMAND eap-tls --tunnel-ca-cert $SERVER_CA_CERT_PATH \
 
 The default TLS version supported is 1.2, 1.3 is supported but has not been tested,
 and it can be enabled by adding the flag `--tls-version 1.X`.
+
+#### Skipping server verification
+
+`--insecure` turns off server certificate verification at every layer. It makes
+`--ca-cert` and `--tunnel-ca-cert` optional, causes the RadSec `SERVER_CA`
+argument to be ignored, and implies `--radsec-unsafe`:
+
+```bash
+# Inspect a server's certificate without setting up a CA first
+$RADIUS_AUTH_COMMAND peap-ms-chapv2 --insecure --username $USERNAME --password $PASSWORD
+```
+
+The server certificate is still reported in full under `--json` — subject,
+serial, expiry, fingerprint, name match — which is the usual reason to reach
+for the flag. What cannot be reported is validity: with no trust anchor there
+is nothing to verify against, so `chain_valid` and `valid` come back as `null`
+rather than `true`. Use it to look, not to monitor.
 
 ### Attributes
 

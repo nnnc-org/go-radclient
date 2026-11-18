@@ -349,3 +349,68 @@ func TestSerialHexMatchesOpensslStyle(t *testing.T) {
 		}
 	}
 }
+
+// With --insecure there is no trust anchor, so validity is unknowable. The
+// observable details must still be reported: seeing a certificate's expiry
+// without configuring a CA is the main reason to use that flag.
+func TestEvaluateServerChainNoTrustAnchor(t *testing.T) {
+	f := newFixture(t)
+	expiry := now.AddDate(0, 4, 0)
+	leaf, _ := issue(t, leafTemplate("radius.example.com", []string{"radius.example.com"}, now.AddDate(0, -1, 0), expiry), f.intermediate)
+
+	ci := EvaluateServerChain(f.chainOf(leaf), nil, "radius.example.com", now)
+
+	if ci.Status != StatusObserved {
+		t.Fatalf("status = %q, want %q", ci.Status, StatusObserved)
+	}
+	// Unknown, not false: there is nothing to verify against.
+	if ci.ChainValid != nil {
+		t.Errorf("chain_valid = %v, want nil without a trust anchor", *ci.ChainValid)
+	}
+	if ci.Valid != nil {
+		t.Errorf("valid = %v, want nil without a trust anchor", *ci.Valid)
+	}
+	if ci.VerifyError != nil {
+		t.Errorf("verify_error = %q, want nil: no verification was attempted", *ci.VerifyError)
+	}
+	// Everything observable is still reported.
+	if ci.ExpiresAt == nil || *ci.ExpiresAt != expiry.Unix() {
+		t.Errorf("expires_at = %v, want %d", ci.ExpiresAt, expiry.Unix())
+	}
+	if ci.ValidNow == nil || !*ci.ValidNow {
+		t.Error("valid_now is still observable without a CA")
+	}
+	if ci.NameMatch == nil || !*ci.NameMatch {
+		t.Error("name_match is still observable without a CA")
+	}
+	for name, got := range map[string]*string{
+		"subject": ci.Subject,
+		"serial":  ci.Serial,
+		"sha256":  ci.SHA256,
+	} {
+		if got == nil {
+			t.Errorf("%s should be reported without a CA", name)
+		}
+	}
+	if len(ci.Chain) != 3 {
+		t.Errorf("chain length = %d, want the 3 presented certs", len(ci.Chain))
+	}
+}
+
+// An expired certificate seen without a trust anchor still reports expired.
+func TestEvaluateServerChainNoTrustAnchorExpired(t *testing.T) {
+	f := newFixture(t)
+	leaf, _ := issue(t, leafTemplate("radius.example.com", []string{"radius.example.com"}, now.AddDate(0, -6, 0), now.AddDate(0, 0, -5)), f.intermediate)
+
+	ci := EvaluateServerChain(f.chainOf(leaf), nil, "radius.example.com", now)
+
+	if ci.ValidNow == nil || *ci.ValidNow {
+		t.Error("valid_now should be false for an expired leaf")
+	}
+	if ci.ExpiresInSeconds == nil || *ci.ExpiresInSeconds >= 0 {
+		t.Errorf("expires_in_seconds = %v, want negative", ci.ExpiresInSeconds)
+	}
+	if ci.Valid != nil {
+		t.Error("valid stays unknown without a trust anchor, even when clearly expired")
+	}
+}
