@@ -19,12 +19,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/markeytos/radius-client/src/metrics"
+	"github.com/nnnc-org/go-radclient/src/metrics"
 )
 
 // version is overridden at build time:
 //
-//	-ldflags "-X github.com/markeytos/radius-client/cmd.version=v1.2.3"
+//	-ldflags "-X github.com/nnnc-org/go-radclient/cmd.version=v1.2.3"
 //
 // Left empty, the version is taken from the build info, which is what
 // `go install module@vX.Y.Z` stamps.

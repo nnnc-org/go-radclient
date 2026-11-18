@@ -12,8 +12,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/markeytos/radius-client/src/eap/diameter"
-	"github.com/markeytos/radius-client/src/metrics"
+	"github.com/nnnc-org/go-radclient/src/eap/diameter"
+	"github.com/nnnc-org/go-radclient/src/metrics"
 )
 
 const ttlsMasterKeyLabel = "ttls keying material"

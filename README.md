@@ -25,12 +25,12 @@ and simple, granular controls for Keytos' use-cases.
 To install the tool locally for use, you can run the following command
 
 ```bash
-go install github.com/markeytos/radius-client@latest
+go install github.com/nnnc-org/go-radclient@latest
 ```
 
 To install a specific version, replace `latest` with a version
 ```bash
-go install github.com/markeytos/radius-client@vX.X.X
+go install github.com/nnnc-org/go-radclient@vX.X.X
 ```
 
 ### Status

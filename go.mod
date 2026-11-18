@@ -1,4 +1,4 @@
-module github.com/markeytos/radius-client
+module github.com/nnnc-org/go-radclient
 
 go 1.26.0
 

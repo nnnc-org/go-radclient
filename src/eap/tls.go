@@ -15,8 +15,8 @@ import (
 	"os"
 	"time"
 
-	eaptls "github.com/markeytos/radius-client/src/eap/tls"
-	"github.com/markeytos/radius-client/src/metrics"
+	eaptls "github.com/nnnc-org/go-radclient/src/eap/tls"
+	"github.com/nnnc-org/go-radclient/src/metrics"
 )
 
 const (

@@ -6,7 +6,7 @@ package cmd
 import (
 	"log/slog"
 
-	"github.com/markeytos/radius-client/src/radius"
+	"github.com/nnnc-org/go-radclient/src/radius"
 	"github.com/spf13/cobra"
 )
 

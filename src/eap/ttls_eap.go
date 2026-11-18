@@ -8,7 +8,7 @@ package eap
 import (
 	"fmt"
 
-	"github.com/markeytos/radius-client/src/eap/diameter"
+	"github.com/nnnc-org/go-radclient/src/eap/diameter"
 )
 
 type TtlsEAP struct {

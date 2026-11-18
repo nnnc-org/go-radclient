@@ -8,7 +8,7 @@ package cmd
 import (
 	"testing"
 
-	"github.com/markeytos/radius-client/src/radius"
+	"github.com/nnnc-org/go-radclient/src/radius"
 )
 
 var (

@@ -9,7 +9,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 
-	"github.com/markeytos/radius-client/src/eap/mschapv2"
+	"github.com/nnnc-org/go-radclient/src/eap/mschapv2"
 )
 
 func (s *Session) MsCHAPv2(uname, pw string) error {

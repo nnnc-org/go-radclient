@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/markeytos/radius-client/src/eap"
-	"github.com/markeytos/radius-client/src/metrics"
-	"github.com/markeytos/radius-client/src/radius"
+	"github.com/nnnc-org/go-radclient/src/eap"
+	"github.com/nnnc-org/go-radclient/src/metrics"
+	"github.com/nnnc-org/go-radclient/src/radius"
 	"github.com/spf13/cobra"
 )
 

@@ -11,7 +11,7 @@ import (
 	"math/big"
 	"net"
 
-	"github.com/markeytos/radius-client/src/metrics"
+	"github.com/nnnc-org/go-radclient/src/metrics"
 )
 
 type Session struct {
