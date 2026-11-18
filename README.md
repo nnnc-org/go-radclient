@@ -33,6 +33,33 @@ To install a specific version, replace `latest` with a version
 go install github.com/nnnc-org/go-radclient@vX.X.X
 ```
 
+#### With Nix
+
+A flake is provided, so no Go toolchain needs to be installed:
+
+```bash
+# Run it directly
+nix run github:nnnc-org/go-radclient -- --json auth udp "$SERVER" "$SECRET" pap \
+    --username "$USER" --password "$PASS"
+
+# Or add it to a profile
+nix profile install github:nnnc-org/go-radclient
+```
+
+From a checkout, `nix develop` gives a shell with the Go toolchain,
+`golangci-lint`, a C compiler for `go test -race`, plus `jq` and `openssl` for
+working with the JSON output and test certificates:
+
+```bash
+nix develop
+make          # build ./bin/radius-client
+make test     # go test -race ./...
+make checks   # fmt, vet, tidy, lint, test
+```
+
+`nix build` produces `./result/bin/radius-client`, and `nix flake check` runs
+the test suite.
+
 ### Status
 
 If the RADIUS server you are probing supports [`Status-Server`](https://datatracker.ietf.org/doc/html/rfc5997),
