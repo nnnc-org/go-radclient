@@ -22,9 +22,11 @@ so the 5s default timeout with retries can exceed a 30s item timeout once
 
 Pass the shared secret from a Zabbix macro (`{$RADIUS.SECRET}`) marked as a
 secret macro, not as literal text in the item key. The same goes for
-`--password`, which is **required** for password-based protocols under
-`--json`: the probe will not prompt, and reports a `config_error` instead of
-hanging until the item times out.
+`--password`, which is **required** for password-based protocols here: an item
+has no terminal, so the probe cannot prompt and reports a `config_error`
+instead of hanging until the item times out. Running the same command by hand
+in a terminal will prompt instead, which is handy for checking a probe before
+wiring it up.
 
 Do not use `--insecure` for monitoring. It still reports certificate expiry,
 but `chain_valid` and `valid` become `null` because there is no trust anchor,

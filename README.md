@@ -131,10 +131,15 @@ $ $RADIUS_AUTH_COMMAND pap --username $USERNAME
 Password for alice:
 ```
 
-Prompting is skipped, with an explanation, when there is nowhere to prompt:
-in `--json` mode, and when stdin is not a terminal. A probe that blocked on a
-prompt would hang until its timeout on every run, and reading from a pipe
-would silently consume input meant for something else.
+Whether it prompts turns on one question: is there a terminal to prompt on.
+It prompts in `--json` mode too, so the metrics document can be inspected
+interactively without putting a password in the shell history -- the prompt
+goes to stderr, so stdout still carries only the document.
+
+With no terminal it refuses, with an explanation, rather than hanging. That is
+the case that matters for a monitoring probe: a prompt there would block until
+the item timed out on every run, and reading from a pipe would silently consume
+input meant for something else. So an unattended probe must pass `--password`.
 
 For password-based authentication schemes that run over an internal TLS tunnel, here
 are the commands to test them:

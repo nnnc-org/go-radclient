@@ -1,32 +1,42 @@
 package cmd
 
 import (
-	"os"
 	"strconv"
 	"strings"
 	"testing"
 )
 
-// withNonTerminalStdin points the terminal check at a pipe, which is what a
-// cron job or a CI runner looks like.
+// withNonTerminalStdin simulates having nowhere to prompt, which is what a
+// monitoring probe, a cron job or a CI runner looks like.
 func withNonTerminalStdin(t *testing.T) {
 	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
+	oldTerm, oldRead := stdinIsTerminal, readPassword
+	stdinIsTerminal = func() bool { return false }
+	readPassword = func() (string, error) {
+		t.Error("readPassword must not be called when there is no terminal")
+		return "", nil
 	}
-	t.Cleanup(func() {
-		_ = r.Close()
-		_ = w.Close()
-	})
-	old := stdinFd
-	stdinFd = int(r.Fd())
-	t.Cleanup(func() { stdinFd = old })
+	t.Cleanup(func() { stdinIsTerminal, readPassword = oldTerm, oldRead })
 }
 
-// Prompting from a monitoring probe would block until the item times out,
-// once per interval, forever. It must be a config error instead.
-func TestPasswordNotPromptedInJSONMode(t *testing.T) {
+// withTerminalStdin simulates an interactive terminal that types pw.
+func withTerminalStdin(t *testing.T, pw string) *int {
+	t.Helper()
+	calls := 0
+	oldTerm, oldRead := stdinIsTerminal, readPassword
+	stdinIsTerminal = func() bool { return true }
+	readPassword = func() (string, error) {
+		calls++
+		return pw, nil
+	}
+	t.Cleanup(func() { stdinIsTerminal, readPassword = oldTerm, oldRead })
+	return &calls
+}
+
+// A probe has no terminal, so --json plus no --password must still fail fast
+// rather than block until the item times out.
+func TestJSONWithoutTerminalStillRefuses(t *testing.T) {
+	withNonTerminalStdin(t)
 	code, doc := runProbe(t,
 		"--json",
 		"auth", "udp", "127.0.0.1", "testing123", "pap",
@@ -46,7 +56,7 @@ func TestPasswordNotPromptedInJSONMode(t *testing.T) {
 	if !strings.Contains(msg, "--password") {
 		t.Errorf("error_message = %q, should say to pass --password", msg)
 	}
-	if !strings.Contains(msg, "--json") {
+	if !strings.Contains(msg, "not a terminal") {
 		t.Errorf("error_message = %q, should explain why it cannot prompt", msg)
 	}
 }
@@ -86,11 +96,13 @@ func TestResolvePasswordRefusals(t *testing.T) {
 			protocol: authEapTLS,
 		},
 		{
-			name:        "json mode refuses",
+			// --json on its own no longer blocks the prompt; only the lack of
+			// a terminal does.
+			name:        "json mode without a terminal refuses",
 			protocol:    authPAP,
 			json:        true,
 			wantErr:     true,
-			wantKeyword: "--json",
+			wantKeyword: "not a terminal",
 		},
 		{
 			name:        "non terminal refuses",
@@ -204,5 +216,88 @@ func TestInnerIdentity(t *testing.T) {
 	username = ""
 	if got := innerIdentity(); got != "anonymous" {
 		t.Errorf("innerIdentity() = %q, want the anonymous identity as a fallback", got)
+	}
+}
+
+// The point of the change: --json no longer blocks prompting, so the metrics
+// document can be inspected interactively without a password in argv.
+func TestPasswordPromptedInJSONModeOnATerminal(t *testing.T) {
+	srv := startFakeServer(t, "testing123", codeAccessAccept, false)
+	calls := withTerminalStdin(t, "hunter2")
+
+	code, doc := runProbe(t,
+		"--json",
+		"--udp-auth-port", strconv.Itoa(srv.port()),
+		"--udp-timeout", "2s",
+		"auth", "udp", "127.0.0.1", "testing123", "pap",
+		"--username", "alice",
+	)
+
+	if *calls != 1 {
+		t.Errorf("readPassword called %d times, want exactly 1", *calls)
+	}
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; error = %v", code, get(t, doc, "auth", "error_message"))
+	}
+	if got := get(t, doc, "auth", "success"); got != true {
+		t.Errorf("auth.success = %v, want true: the typed password should have been used", got)
+	}
+	// The prompt goes to stderr, so the document is still the only thing on
+	// stdout and still parses.
+	if got := get(t, doc, "probe", "ran"); got != true {
+		t.Errorf("probe.ran = %v, want true", got)
+	}
+}
+
+// A typed password is a secret like any other and must not reach the document.
+func TestPromptedPasswordIsRedacted(t *testing.T) {
+	srv := startFakeServer(t, "testing123", codeAccessReject, false)
+	withTerminalStdin(t, "typed-secret-value")
+
+	buf := resetForTest(t)
+	run([]string{
+		"--json",
+		"--udp-auth-port", strconv.Itoa(srv.port()),
+		"--udp-timeout", "2s",
+		"auth", "udp", "127.0.0.1", "testing123", "pap",
+		"--username", "alice",
+	})
+
+	if strings.Contains(buf.String(), "typed-secret-value") {
+		t.Error("the document leaks the password that was typed at the prompt")
+	}
+}
+
+// Prompting once, before any attempt, means a retry does not re-ask.
+func TestPasswordPromptedOnceAcrossRetries(t *testing.T) {
+	srv := startFakeServer(t, "testing123", 0, false) // never answers
+	calls := withTerminalStdin(t, "hunter2")
+
+	runProbe(t,
+		"--json",
+		"--udp-auth-port", strconv.Itoa(srv.port()),
+		"--udp-timeout", "200ms",
+		"--udp-retries", "1",
+		"--retries", "2",
+		"auth", "udp", "127.0.0.1", "testing123", "pap",
+		"--username", "alice",
+	)
+
+	if *calls != 1 {
+		t.Errorf("readPassword called %d times across three attempts, want 1", *calls)
+	}
+}
+
+// An empty password is rejected rather than silently attempted.
+func TestEmptyPromptedPasswordIsRejected(t *testing.T) {
+	withTerminalStdin(t, "")
+	resetForTest(t)
+
+	code := run([]string{
+		"auth", "udp", "127.0.0.1", "testing123", "pap",
+		"--username", "alice",
+	})
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
 	}
 }

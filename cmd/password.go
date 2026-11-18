@@ -12,23 +12,31 @@ import (
 	"golang.org/x/term"
 )
 
-// stdinFd is indirected so tests can point the terminal check at something
-// that is definitely not a terminal.
 var stdinFd = int(os.Stdin.Fd())
+
+// Both indirected so tests can exercise the prompting path without a pty.
+var (
+	stdinIsTerminal = func() bool { return term.IsTerminal(stdinFd) }
+
+	// readPassword reads from the terminal with echo disabled.
+	readPassword = func() (string, error) {
+		entered, err := term.ReadPassword(stdinFd)
+		return string(entered), err
+	}
+)
 
 // resolvePassword fills in the password by prompting, when the protocol needs
 // one and none was given on the command line.
 //
-// It deliberately refuses to prompt in two cases rather than hanging:
+// Whether to prompt turns on one question: is there a terminal to prompt on.
+// It is asked even in --json mode, so that the metrics document can be
+// inspected interactively without putting a password in the shell history.
 //
-//   - In --json mode. A monitoring probe runs unattended, and a prompt there
-//     would block until the item times out, once per interval, forever.
-//   - When stdin is not a terminal. Reading the password from a pipe would
-//     silently consume input the caller may have meant for something else, and
-//     a cron job with no stdin would hang.
-//
-// Both report what to do instead, and in JSON mode that lands in the document
-// as a config error with exit code 2.
+// With no terminal it refuses rather than hanging. That is the case that
+// matters for a monitoring probe, which has no stdin: a prompt there would
+// block until the item timed out, on every interval, forever. Reading from a
+// pipe instead would silently consume input the caller may have meant for
+// something else.
 func resolvePassword(protocol string) error {
 	if password != "" {
 		return nil
@@ -37,30 +45,25 @@ func resolvePassword(protocol string) error {
 		return nil
 	}
 
-	if jsonOutput {
+	if !stdinIsTerminal() {
 		return fmt.Errorf(
-			"protocol %s requires a password: pass --password, since --json cannot prompt for one",
-			protocol,
-		)
-	}
-	if !term.IsTerminal(stdinFd) {
-		return fmt.Errorf(
-			"protocol %s requires a password: pass --password, since stdin is not a terminal",
+			"protocol %s requires a password: pass --password, since stdin is not a terminal to prompt on",
 			protocol,
 		)
 	}
 
-	// The prompt goes to stderr so that it never contaminates stdout.
+	// The prompt goes to stderr so that stdout carries only the JSON document
+	// when that mode is in use.
 	fmt.Fprintf(os.Stderr, "Password for %s: ", username)
-	entered, err := term.ReadPassword(stdinFd)
+	entered, err := readPassword()
 	fmt.Fprintln(os.Stderr)
 	if err != nil {
 		return fmt.Errorf("could not read password: %w", err)
 	}
-	if len(entered) == 0 {
+	if entered == "" {
 		return fmt.Errorf("password must not be empty")
 	}
 
-	password = string(entered)
+	password = entered
 	return nil
 }

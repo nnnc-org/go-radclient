@@ -189,10 +189,14 @@ either if you pass it explicitly. Whatever jitter does occur is reported in
 
 ## Passwords
 
-`--json` never prompts for a password. A probe that blocked on a prompt would
-hang until its item timed out, on every run, so a password-based protocol
-invoked without `--password` is a `config_error` with exit code 2 and a
-message saying so. Interactive prompting applies to text mode only.
+`--json` prompts for a missing password when stdin is a terminal, so the
+document can be inspected interactively without a password in argv. The prompt
+goes to stderr, so stdout still carries only the document.
+
+An unattended probe has no terminal, and prompting there would block until the
+item timed out on every run. So with no terminal a password-based protocol
+invoked without `--password` is a `config_error` with exit code 2 and a message
+saying so, which is why a probe must always pass `--password`.
 
 ## Secrets
 
