@@ -73,7 +73,9 @@ type attempt struct {
 	hasStage bool
 
 	responseCode *string
-	sawReject    bool
+	// sawReject means the server explicitly rejected: an Access-Reject, or a
+	// tunnelled result TLV reporting failure.
+	sawReject bool
 
 	result   Result
 	errMsg   *string
@@ -275,6 +277,21 @@ func (c *Collector) RecordIdentifierMismatch() {
 	defer c.mu.Unlock()
 	if c.cur != nil {
 		c.cur.idMismatch++
+	}
+}
+
+// RecordExplicitReject records a rejection the server stated outright by some
+// means other than an Access-Reject: an EAP Failure, or a PEAP Extensions
+// result TLV carrying Failure. Both are the server saying the authentication
+// failed, so both count as proof of a rejection.
+func (c *Collector) RecordExplicitReject() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cur != nil {
+		c.cur.sawReject = true
 	}
 }
 

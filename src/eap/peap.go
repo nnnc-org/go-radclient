@@ -64,11 +64,39 @@ func (tt *PEAP) Read(b []byte) (int, error) {
 	if err != nil {
 		return n, err
 	}
+	// A PEAPv0 peer may send an inner EAP packet either with its four byte
+	// header intact or with the header stripped, which is what this tunnel
+	// sends. FreeRADIUS does both in one conversation: compressed for the
+	// inner method, full headers for the identity request and for the result
+	// TLV that reports a failed authentication. Assuming compression
+	// unconditionally misparsed the latter, turning a plain rejection into an
+	// unexpected packet type.
+	if isFullEapPacket(b[4 : 4+n]) {
+		copy(b, b[4:4+n])
+		return n, nil
+	}
 	n += 4
 	b[0] = byte(CodeRequest)
 	b[1] = tt.identifier + 1
 	binary.BigEndian.PutUint16(b[2:4], uint16(n))
 	return n, nil
+}
+
+// isFullEapPacket reports whether p already carries an EAP header. The code
+// must be one of the four defined values and the declared length must match
+// what was actually read, which is what tells a Request carrying an identity
+// apart from a bare Identity type byte: both start with 0x01, but only the
+// former has a length field that agrees with the packet.
+func isFullEapPacket(p []byte) bool {
+	if len(p) < 4 {
+		return false
+	}
+	switch Code(p[0]) {
+	case CodeRequest, CodeResponse, CodeSuccess, CodeFailure:
+	default:
+		return false
+	}
+	return int(binary.BigEndian.Uint16(p[2:4])) == len(p)
 }
 
 func (tt *PEAP) Write(b []byte) (int, error) {
@@ -123,3 +151,33 @@ func (tt *PEAP) Close() error {
 	}
 	return err
 }
+
+// tlvResult reads a PEAP Extensions Acknowledged-Result TLV, which is how a
+// tunnelled authentication outcome is reported. ok is false when p is not one.
+//
+// Wire format is a 2 byte AVP type whose top two bits are the mandatory and
+// reserved flags, a 2 byte length, then a 2 byte result: 1 success, 2 failure.
+func tlvResult(p []byte) (success, ok bool) {
+	if len(p) < 6 {
+		return false, false
+	}
+	if binary.BigEndian.Uint16(p[0:2])&0x3fff != tlvTypeAcknowledgedResult {
+		return false, false
+	}
+	if binary.BigEndian.Uint16(p[2:4]) != 2 {
+		return false, false
+	}
+	switch binary.BigEndian.Uint16(p[4:6]) {
+	case tlvResultSuccess:
+		return true, true
+	case tlvResultFailure:
+		return false, true
+	}
+	return false, false
+}
+
+const (
+	tlvTypeAcknowledgedResult = 3
+	tlvResultSuccess          = 1
+	tlvResultFailure          = 2
+)

@@ -187,3 +187,22 @@ func TestInsecureMakesCARequirementsOptional(t *testing.T) {
 		})
 	}
 }
+
+// PEAP and EAP-TTLS exist so the real identity only appears inside the
+// tunnel. Sending the anonymous identity inside too made servers that
+// authorize on it reject every request.
+func TestInnerIdentity(t *testing.T) {
+	t.Cleanup(func() { username, anonymousUsername = "", "anonymous" })
+
+	username, anonymousUsername = "alice@example.com", "anonymous"
+	if got := innerIdentity(); got != "alice@example.com" {
+		t.Errorf("innerIdentity() = %q, want the real username", got)
+	}
+
+	// EAP-TLS inside EAP-TTLS has no username, and an empty inner identity
+	// would be worse than the anonymous one.
+	username = ""
+	if got := innerIdentity(); got != "anonymous" {
+		t.Errorf("innerIdentity() = %q, want the anonymous identity as a fallback", got)
+	}
+}

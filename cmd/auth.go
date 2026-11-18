@@ -237,7 +237,7 @@ func eapAuth(session *eap.Session, serverName, protocol string) error {
 			return err
 		}
 		eapttls.SetMetrics(collector, metrics.LayerEAP)
-		ts := eap.NewSession(eapttls, anonymousUsername, false)
+		ts := eap.NewSession(eapttls, innerIdentity(), false)
 		ts.Metrics = collector
 		return ts.MsCHAPv2(username, password)
 	case authEapTtlsEapTLS:
@@ -248,7 +248,7 @@ func eapAuth(session *eap.Session, serverName, protocol string) error {
 		// Two handshakes here, reported separately: the outer tunnel and the
 		// inner EAP-TLS, each with its own CA and its own certificate.
 		eapttls.SetMetrics(collector, metrics.LayerEAP)
-		ts := eap.NewSession(eapttls, anonymousUsername, false)
+		ts := eap.NewSession(eapttls, innerIdentity(), false)
 		ts.Metrics = collector
 		eaptls, err := eap.CreateTLS(ts, caCertificate, tlsVersion, tlsSkipHostnameCheck)
 		if err != nil {
@@ -262,7 +262,7 @@ func eapAuth(session *eap.Session, serverName, protocol string) error {
 			return err
 		}
 		peap.SetMetrics(collector, metrics.LayerEAP)
-		ts := eap.NewSession(peap, anonymousUsername, true)
+		ts := eap.NewSession(peap, innerIdentity(), true)
 		ts.Metrics = collector
 		return ts.MsCHAPv2(username, password)
 	default:
@@ -352,4 +352,23 @@ func preloadProbeCerts(protocol string) error {
 	}
 	_, err := loadClientCert(clientCertificate, clientCertLayer(protocol))
 	return err
+}
+
+// innerIdentity is the EAP identity sent inside a PEAP or EAP-TTLS tunnel.
+//
+// The point of those protocols is that the real identity is only revealed
+// inside the encrypted tunnel, so the anonymous identity belongs on the
+// outside only. Sending it inside as well makes any server that authorizes on
+// the inner identity reject the request, which it reports as a tunnelled
+// failure rather than as a bad password -- a confusing way to discover a
+// client bug. This matches what eapol_test does with identity versus
+// anonymous_identity.
+//
+// Protocols with no username, such as EAP-TLS inside EAP-TTLS, fall back to
+// the anonymous identity rather than sending an empty one.
+func innerIdentity() string {
+	if username != "" {
+		return username
+	}
+	return anonymousUsername
 }
