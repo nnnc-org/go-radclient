@@ -374,21 +374,45 @@ func (c *Collector) RecordLayerClientCert(l Layer, ci CertInfo) {
 	rec.clientCert = &ci
 }
 
-// SetProbeClientCert sets the flat client_cert object: the one certificate
-// whose expiry an operator cares about, which is the probe's own.
+// SetProbeClientCert offers a certificate for the flat client_cert object:
+// the one whose expiry an operator cares about, which is the probe's own.
 //
 // It is set from a parse done before dialing, so certificate expiry alerting
 // keeps working when the server is unreachable.
+//
+// A run can present more than one: a RadSec transport certificate and an EAP
+// one. The highest ranked wins regardless of the order they are offered in,
+// because the RadSec connection is dialed after the EAP certificate has
+// already been parsed, and plain assignment let the transport certificate
+// displace the one the server actually authenticates.
 func (c *Collector) SetProbeClientCert(l Layer, ci CertInfo) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.clientCert != nil && clientCertRank(l) <= clientCertRank(c.clientCertLayer) {
+		return
+	}
 	ci.Layer = layerPtr(l)
 	ci.Role = RoleClient
 	c.clientCert = &ci
 	c.clientCertLayer = l
+}
+
+// clientCertRank orders layers for the flat client_cert. The certificate the
+// server authenticates us by outranks the one that merely carried the
+// transport.
+func clientCertRank(l Layer) int {
+	switch l {
+	case LayerEAPInner:
+		return 2
+	case LayerEAP:
+		return 1
+	case LayerRadSec:
+		return 0
+	}
+	return -1
 }
 
 // HandshakeTimer measures one TLS handshake.

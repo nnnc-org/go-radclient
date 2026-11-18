@@ -413,3 +413,34 @@ func TestJSONInsecureIgnoresCAArgument(t *testing.T) {
 		t.Errorf("auth.success = %v, want true", got)
 	}
 }
+
+// With both a RadSec transport certificate and an EAP client certificate in
+// play, the flat client_cert must name the one whose expiry an operator cares
+// about: the EAP certificate the server actually authenticates.
+func TestFlatClientCertPrefersEapOverRadsec(t *testing.T) {
+	f := newRadsecFixture(t, time.Now().Add(30*24*time.Hour))
+	port := startRadsecServer(t, f, codeAccessAccept)
+	// A different certificate, with a different serial, for the EAP layer.
+	eapCert := testClientCertPath(t)
+
+	_, doc := runProbe(t,
+		"--json",
+		"--insecure",
+		"--tcp-port", strconv.Itoa(port),
+		"--tls-timeout", "2s",
+		"auth", "tls", "127.0.0.1", f.caPath, f.clientPath, "eap-tls",
+		"--client-cert", eapCert,
+	)
+
+	// The RadSec fixture client cert is serial c11e; testClientCertPath is 2a.
+	if got := get(t, doc, "client_cert", "layer"); got != "eap" {
+		t.Errorf("client_cert.layer = %v, want eap", got)
+	}
+	if got := get(t, doc, "client_cert", "serial"); got != "2a" {
+		t.Errorf("client_cert.serial = %v, want 2a (the EAP cert), not c11e (RadSec)", got)
+	}
+	// Both are still addressable per layer.
+	if got := get(t, doc, "tls", "layers", "radsec", "client_cert", "serial"); got != "c11e" {
+		t.Errorf("radsec layer client_cert.serial = %v, want c11e", got)
+	}
+}

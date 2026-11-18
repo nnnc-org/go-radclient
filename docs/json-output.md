@@ -133,6 +133,11 @@ certificate whose expiry an operator cares about, the probe's own. It is
 parsed **before dialling**, so its expiry is still reported when the server is
 unreachable — which is exactly when you need the warning.
 
+A run can present two: a RadSec transport certificate and an EAP one. The flat
+object names the EAP certificate in that case, since that is the one the
+server authenticates you by, and its `layer` field says which it picked. Both
+remain addressable at `$.tls.layers.<name>.client_cert`.
+
 | Field | Meaning |
 |---|---|
 | `status` | `observed`, `not_applicable`, or `unavailable`, as above. |
