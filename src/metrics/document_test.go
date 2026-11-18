@@ -69,6 +69,10 @@ func assertFullShape(t *testing.T, m map[string]any) {
 	assertKeys(t, m["tls"], "$.tls", wantTLSKeys)
 	assertKeys(t, m["client_cert"], "$.client_cert", wantCertKeys)
 
+	if attempts, ok := m["attempts"].([]any); ok && len(attempts) > 0 {
+		assertKeys(t, attempts[0], "$.attempts[0]", wantAttemptKeys)
+	}
+
 	layers := keysOf(t, m["tls"].(map[string]any)["layers"], "$.tls.layers")
 	if strings.Join(layers, ",") != "eap,eap_inner,radsec" {
 		t.Errorf("$.tls.layers keys = %v, want eap,eap_inner,radsec", layers)
@@ -128,7 +132,7 @@ func TestDocumentEapTlsSuccess(t *testing.T) {
 		CipherSuite: tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
 	})
 	c.RecordServerChain(LayerEAP, EvaluateServerChain(f.chainOf(leaf), f.roots, "radius.example.com", now))
-	hs.Finish(nil)
+	_ = hs.Finish(nil)
 	c.AddSent()
 	c.AddReceived()
 	c.AdvanceStage(StageRadiusResponse)
@@ -221,7 +225,7 @@ func TestDocumentAuthFailureKeepsCertValid(t *testing.T) {
 	c.BeginAttempt(0)
 	hs := c.BeginHandshake(LayerEAP)
 	c.RecordServerChain(LayerEAP, EvaluateServerChain(f.chainOf(leaf), f.roots, "radius.example.com", now))
-	hs.Finish(nil)
+	_ = hs.Finish(nil)
 	c.AdvanceStage(StageRadiusResponse)
 	c.RecordResponse(3, "Access-Reject", true)
 	c.FinishAttempt(errors.New("authentication failed"))
@@ -354,7 +358,7 @@ func TestDocumentPeerCertRejectedOnlyOnProof(t *testing.T) {
 	c.ExpectLayer(LayerEAP)
 	c.BeginAttempt(0)
 	hs := c.BeginHandshake(LayerEAP)
-	hs.Finish(errors.New("eap tls: server sent a failure packet"))
+	_ = hs.Finish(errors.New("eap tls: server sent a failure packet"))
 	c.FinishAttempt(Wrap(StageTLS, ResultTLSError, errors.New("eap tls: server sent a failure packet")))
 
 	eap := c.Document().TLS.Layers[LayerEAP]
@@ -374,7 +378,7 @@ func TestDocumentPeerCertRejectedWithProof(t *testing.T) {
 	c.ExpectLayer(LayerEAP)
 	c.BeginAttempt(0)
 	hs := c.BeginHandshake(LayerEAP)
-	hs.Finish(alertErr)
+	_ = hs.Finish(alertErr)
 	c.FinishAttempt(Wrap(StageTLS, ResultTLSError, alertErr))
 
 	doc := c.Document()

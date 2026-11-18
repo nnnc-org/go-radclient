@@ -40,7 +40,7 @@ func (c *Collector) Classify(err error) (Result, Stage) {
 	c.mu.Lock()
 	ran := c.ran
 	var (
-		stage      Stage = StageConfig
+		stage      = StageConfig
 		sawReject  bool
 		mismatches int
 	)
