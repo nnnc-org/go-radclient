@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -41,11 +42,20 @@ func resetForTest(t *testing.T) *bytes.Buffer {
 		c.Flags().VisitAll(resetFlag)
 		c.PersistentFlags().VisitAll(resetFlag)
 	}
-	rootCmd.SilenceUsage = false
-	rootCmd.SilenceErrors = false
+	// PersistentPreRunE sets SilenceUsage on whichever command ran, so it has
+	// to be cleared everywhere or one test masks the next.
+	resetSilence(rootCmd)
 
 	t.Cleanup(func() { stdout = &bytes.Buffer{} })
 	return &buf
+}
+
+func resetSilence(c *cobra.Command) {
+	c.SilenceUsage = false
+	c.SilenceErrors = false
+	for _, sub := range c.Commands() {
+		resetSilence(sub)
+	}
 }
 
 func resetFlag(f *pflag.Flag) {
@@ -389,4 +399,77 @@ func testClientCertPath(t *testing.T) string {
 		t.Fatalf("write pem: %v", err)
 	}
 	return path
+}
+
+// captureCobraOutput points cobra at a buffer for one run.
+func captureCobraOutput(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+	})
+	return &buf
+}
+
+// A failed authentication should say what went wrong, not print the entire
+// flag listing.
+func TestRuntimeErrorDoesNotPrintUsage(t *testing.T) {
+	srv := startFakeServer(t, "testing123", 0, false) // never answers
+	resetForTest(t)
+	out := captureCobraOutput(t)
+
+	code := run([]string{
+		"--udp-auth-port", strconv.Itoa(srv.port()),
+		"--udp-timeout", "200ms",
+		"--udp-retries", "1",
+		"auth", "udp", "127.0.0.1", "testing123", "pap",
+		"--username", "alice", "--password", "pw",
+	})
+
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if strings.Contains(out.String(), "Usage:") {
+		t.Errorf("usage was printed for a runtime error:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "did not get response") {
+		t.Errorf("the error itself should still be reported, got:\n%s", out.String())
+	}
+}
+
+// A missing required value explains itself, so it does not need the listing
+// either.
+func TestMissingValueDoesNotPrintUsage(t *testing.T) {
+	resetForTest(t)
+	out := captureCobraOutput(t)
+
+	code := run([]string{"auth", "udp", "127.0.0.1", "testing123", "eap-tls"})
+
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if strings.Contains(out.String(), "Usage:") {
+		t.Errorf("usage was printed:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "missing values") {
+		t.Errorf("expected the missing-value error, got:\n%s", out.String())
+	}
+}
+
+// A genuine usage mistake still gets the listing, since that is when it helps.
+func TestArgumentCountErrorStillPrintsUsage(t *testing.T) {
+	resetForTest(t)
+	out := captureCobraOutput(t)
+
+	code := run([]string{"auth", "udp", "127.0.0.1"})
+
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(out.String(), "Usage:") {
+		t.Errorf("usage should be printed for a wrong argument count, got:\n%s", out.String())
+	}
 }

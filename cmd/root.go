@@ -55,6 +55,12 @@ var rootCmd = &cobra.Command{
 used to carry out both UDP and TLS authentication sessions
 for most common authentication protocol.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Silence the usage dump from here on. Cobra validates flags and
+		// argument counts before this hook runs, so a genuine usage mistake
+		// still gets the flag listing, while a failed authentication just
+		// reports what went wrong instead of thirty lines of help.
+		cmd.SilenceUsage = true
+
 		if jsonOutput {
 			if group := topLevelName(cmd); group != authCmd.Name() {
 				return fmt.Errorf("--json is not supported for %s yet, only for %s", group, authCmd.Name())
