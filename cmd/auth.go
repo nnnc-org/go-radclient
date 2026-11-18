@@ -129,7 +129,9 @@ func init() {
 	authCmd.PersistentFlags().BoolVar(&eapSendStart, "eap-send-start", false, "EAP send EAP-Start")
 	authCmd.PersistentFlags().BoolVar(&tlsSkipHostnameCheck, "tls-skip-hostname-check", false, "TLS skip Hostname check in handshake")
 
-	authCmd.MarkFlagsRequiredTogether("username", "password")
+	// username and password are no longer required together: a missing
+	// password is prompted for instead, and cobra would reject the
+	// combination before we got the chance.
 
 	authCmd.AddCommand(authUdpCmd, authTlsCmd)
 }
@@ -278,6 +280,11 @@ func prerun(cmd *cobra.Command, args []string) error {
 			protocol,
 		)
 	}
+	// Done here rather than in the run functions so that the prompt happens
+	// once, before any attempt, and never between retries.
+	if err := resolvePassword(protocol); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -288,17 +295,16 @@ func missingValues(protocol string) (mv []string) {
 	if _, ok := requireUsernameAndPassword[protocol]; ok && username == "" {
 		mv = append(mv, "username")
 	}
-	if _, ok := requireUsernameAndPassword[protocol]; ok && password == "" {
-		mv = append(mv, "password")
-	}
 	if _, ok := requireClientAndCACertificate[protocol]; ok && clientCertificate == "" {
 		mv = append(mv, "client-cert")
 	}
-	if _, ok := requireClientAndCACertificate[protocol]; ok && caCertificate == "" {
-		mv = append(mv, "ca-cert")
-	}
-	if _, ok := requireTunneledCACertificate[protocol]; ok && tunnelCACertificate == "" {
-		mv = append(mv, "tunnel-ca-cert")
+	if !insecure {
+		if _, ok := requireClientAndCACertificate[protocol]; ok && caCertificate == "" {
+			mv = append(mv, "ca-cert")
+		}
+		if _, ok := requireTunneledCACertificate[protocol]; ok && tunnelCACertificate == "" {
+			mv = append(mv, "tunnel-ca-cert")
+		}
 	}
 	return
 }
