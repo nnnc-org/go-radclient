@@ -12,6 +12,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"github.com/markeytos/radius-client/src/metrics"
 )
 
 type AuthenticationSession struct {
@@ -42,10 +44,12 @@ func (s *AuthenticationSession) Status() error {
 	}
 
 	if rd.Header.Code != CodeAccessAccept {
-		return fmt.Errorf("status: invalid status response code: %s", rd.Header.Code.String())
+		return metrics.Wrap(metrics.StageRadiusResponse, metrics.ResultProtocolError,
+			fmt.Errorf("status: invalid status response code: %s", rd.Header.Code.String()))
 	}
 	if !rd.Attributes.ContainsType(AttributeTypeMessageAuthenticator) {
-		return fmt.Errorf("status: missing message authenticator in response")
+		return metrics.Wrap(metrics.StageRadiusResponse, metrics.ResultProtocolError,
+			fmt.Errorf("status: missing message authenticator in response"))
 	}
 	return s.lastReadDatagramHasExpectedAttributes()
 }
@@ -66,11 +70,15 @@ func (s *AuthenticationSession) MAB(macAddress string) error {
 	}
 
 	if rd.Header.Code != CodeAccessAccept {
+		// Reported as a rejection only provisionally: Classify downgrades it to
+		// a protocol error unless an Access-Reject was actually observed.
 		a := rd.Attributes.FirstOfType(AttributeTypeReplyMessage)
 		if a == nil {
-			return fmt.Errorf("mab: authentication failed")
+			return metrics.Wrap(metrics.StageRadiusResponse, metrics.ResultReject,
+				fmt.Errorf("mab: authentication failed"))
 		}
-		return fmt.Errorf("mab: authentication failed: %s", string(a.Value))
+		return metrics.Wrap(metrics.StageRadiusResponse, metrics.ResultReject,
+			fmt.Errorf("mab: authentication failed: %s", string(a.Value)))
 	}
 	return s.lastReadDatagramHasExpectedAttributes()
 }
@@ -94,18 +102,23 @@ func (s *AuthenticationSession) PAP(username, password string) error {
 	}
 
 	if rd.Header.Code != CodeAccessAccept {
+		// Reported as a rejection only provisionally: Classify downgrades it to
+		// a protocol error unless an Access-Reject was actually observed.
 		a := rd.Attributes.FirstOfType(AttributeTypeReplyMessage)
 		if a == nil {
-			return fmt.Errorf("pap: authentication failed")
+			return metrics.Wrap(metrics.StageRadiusResponse, metrics.ResultReject,
+				fmt.Errorf("pap: authentication failed"))
 		}
-		return fmt.Errorf("pap: authentication failed: %s", string(a.Value))
+		return metrics.Wrap(metrics.StageRadiusResponse, metrics.ResultReject,
+			fmt.Errorf("pap: authentication failed: %s", string(a.Value)))
 	}
 	return s.lastReadDatagramHasExpectedAttributes()
 }
 
 func (s *AuthenticationSession) VerifyEAP(recvkey, sendkey []byte) error {
 	if s.lastReadDatagram.Header.Code != CodeAccessAccept {
-		return fmt.Errorf("eap: last read datagram was not an Access-Accept")
+		return metrics.Wrap(metrics.StageRadiusResponse, metrics.ResultReject,
+			fmt.Errorf("eap: last read datagram was not an Access-Accept"))
 	}
 
 	mismatchedKeys := make([]string, 0, 2)
@@ -128,7 +141,10 @@ func (s *AuthenticationSession) VerifyEAP(recvkey, sendkey []byte) error {
 	}
 
 	if len(mismatchedKeys) > 0 {
-		return fmt.Errorf("eap: session key (%s) mismatch", strings.Join(mismatchedKeys, ", "))
+		// The server already accepted, so this is a keying mismatch between us
+		// and it, not a rejected authentication.
+		return metrics.Wrap(metrics.StageRadiusResponse, metrics.ResultProtocolError,
+			fmt.Errorf("eap: session key (%s) mismatch", strings.Join(mismatchedKeys, ", ")))
 	}
 	return s.lastReadDatagramHasExpectedAttributes()
 }

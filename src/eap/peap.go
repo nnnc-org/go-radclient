@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"github.com/markeytos/radius-client/src/metrics"
 )
 
 type PEAP struct {
@@ -33,7 +35,9 @@ func CreatePEAP(session *Session, caCert, tlsVersion, serverName, tlsTunnelKeyLo
 		InsecureSkipVerify:     tlsSkipHostnameCheck,
 		ServerName:             serverName,
 		VerifyPeerCertificate:  t.verifyCertificateChain,
+		VerifyConnection:       t.recordConnectionState,
 	}
+	t.serverName = serverName
 	var peap *PEAP
 	if tlsTunnelKeyLogFilename != "" {
 		f, err := os.OpenFile(tlsTunnelKeyLogFilename, os.O_CREATE|os.O_WRONLY, 0600)
@@ -45,6 +49,9 @@ func CreatePEAP(session *Session, caCert, tlsVersion, serverName, tlsTunnelKeyLo
 	} else {
 		peap = &PEAP{TLS: t, client: tls.Client(t, tlsConfig)}
 	}
+	// Keep the same connection reachable through the embedded TLS, so that one
+	// accessor serves every protocol.
+	t.conn = peap.client
 	return peap, nil
 }
 
@@ -66,10 +73,13 @@ func (tt *PEAP) Read(b []byte) (int, error) {
 
 func (tt *PEAP) Write(b []byte) (int, error) {
 	if len(b) == 0 {
-		err := tt.client.Handshake()
+		tt.Metrics.AdvanceStage(metrics.StageTLS)
+		hat := tt.Metrics.BeginHandshake(tt.Layer)
+		err := hat.Finish(tt.client.Handshake())
 		if err != nil {
-			return 0, err
+			return 0, metrics.Wrap(metrics.StageTLS, metrics.ResultTLSError, err)
 		}
+		tt.Metrics.AdvanceStage(metrics.StageInnerAuth)
 		wd := tt.newDatagram(&Content{Type: tt.packetType, Data: []byte{0}})
 		_, err = tt.WriteDatagram(wd)
 		return 0, err
@@ -109,7 +119,7 @@ func (tt *PEAP) Close() error {
 
 	tt.RecvKey, tt.SendKey, err = exportKeyingMaterial(tt.client, eapMasterKeyLabel)
 	if tt.tunnelKeyLogWriter != nil {
-		err = errors.Join(tt.tunnelKeyLogWriter.Close())
+		err = errors.Join(err, tt.tunnelKeyLogWriter.Close())
 	}
 	return err
 }

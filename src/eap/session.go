@@ -10,10 +10,15 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+
+	"github.com/markeytos/radius-client/src/metrics"
 )
 
 type Session struct {
-	Tunnel            EapTunnel
+	Tunnel EapTunnel
+	// Metrics is attached from package cmd after construction. It is promoted
+	// through TLS, PEAP, TTLS and TtlsEAP, and every method on it is nil-safe.
+	Metrics           *metrics.Collector
 	EAPSendStart      bool
 	AnonymousUsername string
 	RecvKey, SendKey  []byte
@@ -126,6 +131,7 @@ func (s *Session) WriteReadDatagram(wd *Datagram, rd *Datagram) error {
 }
 
 func (s *Session) start(targetType Type) error {
+	s.Metrics.AdvanceStage(metrics.StageEAPNegotiation)
 	rd := &Datagram{}
 	if s.EAPSendStart {
 		_, err := s.Tunnel.Write(nil)
@@ -137,7 +143,8 @@ func (s *Session) start(targetType Type) error {
 			return err
 		}
 		if rd.Header.Code != CodeRequest || rd.Content == nil || rd.Content.Type != TypeIdentity {
-			return fmt.Errorf("did not receive identity request from server")
+			return metrics.Wrap(metrics.StageEAPNegotiation, metrics.ResultProtocolError,
+				fmt.Errorf("did not receive identity request from server"))
 		}
 	}
 
@@ -151,10 +158,12 @@ func (s *Session) start(targetType Type) error {
 		return err
 	}
 	if rd.Header.Code != CodeRequest {
-		return fmt.Errorf("unexpected EAP code in server response")
+		return metrics.Wrap(metrics.StageEAPNegotiation, metrics.ResultProtocolError,
+			fmt.Errorf("unexpected EAP code in server response"))
 	}
 	if rd.Content == nil {
-		return fmt.Errorf("expected EAP content in request")
+		return metrics.Wrap(metrics.StageEAPNegotiation, metrics.ResultProtocolError,
+			fmt.Errorf("expected EAP content in request"))
 	}
 	if rd.Content.Type != targetType {
 		nak := &Content{
@@ -167,7 +176,8 @@ func (s *Session) start(targetType Type) error {
 			return err
 		}
 		if rd.Header.Code != CodeRequest || rd.Content == nil || rd.Content.Type != targetType {
-			return fmt.Errorf("got %s: failed to negotiate the target EAP type", wd.Header.Code.String())
+			return metrics.Wrap(metrics.StageEAPNegotiation, metrics.ResultProtocolError,
+				fmt.Errorf("got %s: failed to negotiate the target EAP type", wd.Header.Code.String()))
 		}
 	}
 	return nil

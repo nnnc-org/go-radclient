@@ -10,15 +10,23 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
 	"strings"
 	"time"
+
+	"github.com/markeytos/radius-client/src/metrics"
 )
 
 type session struct {
 	net.Conn
+	// Metrics is exported so that it is promoted through AuthenticationSession
+	// and AccountingSession and can be attached from package cmd after
+	// construction, without changing any constructor signature. Every method
+	// on it is nil-safe.
+	Metrics             *metrics.Collector
 	identifier          uint8
 	sharedSecret        string
 	timeout             time.Duration
@@ -95,7 +103,11 @@ func (s *session) newDatagram(h *Header, attrs ...*Attribute) (*Datagram, error)
 }
 
 func (s *session) WriteDatagram(wd *Datagram) (int, error) {
-	time.Sleep(randDuration(s.minWriteJitter, s.maxWriteJitter))
+	// Record the deliberate send jitter before sleeping it, so that latency
+	// metrics can report a figure that is not mostly our own sleep.
+	jitter := randDuration(s.minWriteJitter, s.maxWriteJitter)
+	s.Metrics.AddJitter(jitter)
+	time.Sleep(jitter)
 	err := s.SetWriteDeadline(time.Now().Add(s.timeout))
 	if err != nil {
 		return 0, fmt.Errorf("error setting send deadline: %w", err)
@@ -104,6 +116,7 @@ func (s *session) WriteDatagram(wd *Datagram) (int, error) {
 	if err != nil {
 		return int(n), fmt.Errorf("error sending RADIUS datagram: %w", err)
 	}
+	s.Metrics.AddSent()
 	s.lastWrittenDatagram = wd
 	return int(n), nil
 }
@@ -111,13 +124,25 @@ func (s *session) WriteDatagram(wd *Datagram) (int, error) {
 func (s *session) ReadDatagram(rd *Datagram) (int, error) {
 	var n int64
 	var err error
-	for range s.retries {
+	for i := range s.retries {
 		err = s.SetReadDeadline(time.Now().Add(s.timeout))
 		if err != nil {
 			return 0, fmt.Errorf("error setting receive deadline: %w", err)
 		}
 		n, err = rd.ReadFrom(s)
-		if err == nil && rd.Header.Identifier == s.identifier {
+		if err == nil {
+			s.Metrics.AddReceived()
+			if rd.Header.Identifier == s.identifier {
+				break
+			}
+			// Something answered, it just did not answer this request. Without
+			// counting it, this is indistinguishable from the timeout below.
+			s.Metrics.RecordIdentifierMismatch()
+		}
+		// The read failed or answered a different request. Only retransmit when
+		// another read attempt will follow: retransmitting on the final iteration
+		// sends a datagram nobody will ever read.
+		if i == s.retries-1 {
 			break
 		}
 		_, werr := s.WriteDatagram(s.lastWrittenDatagram)
@@ -126,11 +151,18 @@ func (s *session) ReadDatagram(rd *Datagram) (int, error) {
 		}
 	}
 	if rd.Header == nil || rd.Header.Identifier != s.identifier {
-		return int(n), fmt.Errorf("did not get response from server")
+		return int(n), metrics.Wrap(metrics.StageRadiusResponse, readResult(err),
+			fmt.Errorf("did not get response from server"))
 	}
 	if err != nil {
-		return int(n), fmt.Errorf("error receiving RADIUS datagram: %w", err)
+		return int(n), metrics.Wrap(metrics.StageRadiusResponse, readResult(err),
+			fmt.Errorf("error receiving RADIUS datagram: %w", err))
 	}
+	// The response code is the authoritative outcome. Recording it here is what
+	// lets a rejection be reported as a fact rather than inferred from an error
+	// string, and it covers the EAP path too, which reads through here.
+	s.Metrics.RecordResponse(uint8(rd.Header.Code), rd.Header.Code.String(), rd.Header.Code == CodeAccessReject)
+	s.Metrics.AdvanceStage(metrics.StageRadiusResponse)
 	s.lastReadDatagram = rd
 	for _, a := range rd.Attributes {
 		switch a.Type {
@@ -139,9 +171,24 @@ func (s *session) ReadDatagram(rd *Datagram) (int, error) {
 		}
 	}
 	if !validResponseAndMessageAuthenticator(rd, s.lastWrittenDatagram.Header.Authenticator, s.sharedSecret) {
-		return int(n), fmt.Errorf("invalid RADIUS response authenticators")
+		return int(n), metrics.Wrap(metrics.StageRadiusResponse, metrics.ResultProtocolError,
+			fmt.Errorf("invalid RADIUS response authenticators"))
 	}
 	return int(n), nil
+}
+
+// readResult tells a genuine timeout apart from a socket that refused outright,
+// which for UDP is the difference between a server that is not answering and a
+// server that is not listening at all.
+func readResult(err error) metrics.Result {
+	if err == nil {
+		return metrics.ResultTimeout
+	}
+	var nerr net.Error
+	if errors.As(err, &nerr) && nerr.Timeout() {
+		return metrics.ResultTimeout
+	}
+	return metrics.ResultConnectionError
 }
 
 func (s *session) WriteReadDatagram(wd *Datagram, rd *Datagram) error {
@@ -173,7 +220,10 @@ func (s *session) lastReadDatagramHasExpectedAttributes() error {
 		}
 	}
 	if len(expectedAttrs) > 0 {
-		return fmt.Errorf("expected attributes were missing or had different values: %s", strings.Join(expectedAttrs, ", "))
+		// The server answered, and may well have accepted. This is a protocol
+		// mismatch rather than a rejection or an outage.
+		return metrics.Wrap(metrics.StageRadiusResponse, metrics.ResultProtocolError,
+			fmt.Errorf("expected attributes were missing or had different values: %s", strings.Join(expectedAttrs, ", ")))
 	}
 	return nil
 }

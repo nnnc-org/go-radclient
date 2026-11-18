@@ -16,6 +16,7 @@ import (
 	"time"
 
 	eaptls "github.com/markeytos/radius-client/src/eap/tls"
+	"github.com/markeytos/radius-client/src/metrics"
 )
 
 const (
@@ -40,6 +41,34 @@ type TLS struct {
 	readBuffer        []byte
 	readMore          bool
 	skipHostnameCheck bool
+
+	// conn is retained so that the negotiated connection state stays reachable
+	// after the handshake. Without it, EAP-TLS -- the protocol that matters
+	// most for certificate monitoring -- would expose nothing.
+	conn *tls.Conn
+	// serverName is the identity the peer certificate is expected to carry. It
+	// is used for reporting the name match, never to change verification.
+	serverName string
+	// Layer names which handshake this instance is, so that a run with both an
+	// outer tunnel and an inner EAP-TLS reports them separately.
+	Layer metrics.Layer
+}
+
+// SetMetrics attaches the collector and names this handshake. Call it right
+// after Create*, before the handshake runs.
+func (tt *TLS) SetMetrics(c *metrics.Collector, layer metrics.Layer) {
+	tt.Metrics = c
+	tt.Layer = layer
+	c.ExpectLayer(layer)
+}
+
+// ConnectionState exposes the negotiated handshake state, once there is one.
+func (tt *TLS) ConnectionState() (tls.ConnectionState, bool) {
+	if tt.conn == nil {
+		return tls.ConnectionState{}, false
+	}
+	cs := tt.conn.ConnectionState()
+	return cs, cs.HandshakeComplete
 }
 
 func CreateTLS(session *Session, caCert, tlsVersion string, skipHostnameCheck bool) (*TLS, error) {
@@ -47,12 +76,18 @@ func CreateTLS(session *Session, caCert, tlsVersion string, skipHostnameCheck bo
 }
 
 func internalCreateTLS(session *Session, caCert, tlsVersion string, skipHostnameCheck bool, pt Type) (*TLS, error) {
+	// An unreadable or non-PEM CA file is a config error. Letting it through
+	// would leave an empty pool, and the run would then blame the server for an
+	// invalid certificate chain that is really an operator mistake.
 	content, err := os.ReadFile(caCert)
 	if err != nil {
-		return nil, err
+		return nil, metrics.Wrap(metrics.StageConfig, metrics.ResultConfigError, err)
 	}
 	rootCAs := x509.NewCertPool()
-	rootCAs.AppendCertsFromPEM(content)
+	if !rootCAs.AppendCertsFromPEM(content) {
+		return nil, metrics.Wrap(metrics.StageConfig, metrics.ResultConfigError,
+			fmt.Errorf("no certificates found in CA file: %s", caCert))
+	}
 
 	var tlsv uint16
 	switch tlsVersion {
@@ -79,14 +114,24 @@ func internalCreateTLS(session *Session, caCert, tlsVersion string, skipHostname
 }
 
 func (tt *TLS) Authenticate(certpath, keyLogFilename string) error {
+	// LoadX509KeyPair validates that the private key matches the certificate,
+	// so a success here is what key_match reports. A failure to read the file
+	// says nothing about whether they matched, so it is a config error rather
+	// than a claimed mismatch.
 	cert, err := tls.LoadX509KeyPair(certpath, certpath)
 	if err != nil {
-		return err
+		return metrics.Wrap(metrics.StageConfig, metrics.ResultConfigError, err)
+	}
+	if cert.Leaf != nil {
+		keyMatch := true
+		tt.Metrics.RecordLayerClientCert(tt.Layer,
+			metrics.EvaluateClientCert(cert.Leaf, &keyMatch, time.Now()))
 	}
 	h, _, err := net.SplitHostPort(tt.RemoteAddr().String())
 	if err != nil {
 		return err
 	}
+	tt.serverName = h
 	tlsConfig := &tls.Config{
 		RootCAs:               tt.rootCAs,
 		Certificates:          []tls.Certificate{cert},
@@ -95,6 +140,7 @@ func (tt *TLS) Authenticate(certpath, keyLogFilename string) error {
 		MaxVersion:            tt.tlsVersion,
 		InsecureSkipVerify:    tt.skipHostnameCheck,
 		VerifyPeerCertificate: tt.verifyCertificateChain,
+		VerifyConnection:      tt.recordConnectionState,
 		Renegotiation:         tls.RenegotiateNever,
 	}
 	if keyLogFilename != "" {
@@ -113,10 +159,14 @@ func (tt *TLS) Authenticate(certpath, keyLogFilename string) error {
 		tlsConfig.KeyLogWriter = f
 	}
 	tc := tls.Client(tt, tlsConfig)
-	err = tc.Handshake()
+	tt.conn = tc
+	tt.Metrics.AdvanceStage(metrics.StageTLS)
+	hat := tt.Metrics.BeginHandshake(tt.Layer)
+	err = hat.Finish(tc.Handshake())
 	if err != nil {
-		return err
+		return metrics.Wrap(metrics.StageTLS, metrics.ResultTLSError, err)
 	}
+	tt.Metrics.AdvanceStage(metrics.StageInnerAuth)
 
 	if tt.tlsVersion == tls.VersionTLS13 {
 		buff := make([]byte, 16)
@@ -125,7 +175,8 @@ func (tt *TLS) Authenticate(certpath, keyLogFilename string) error {
 			return err
 		}
 		if blen != 1 || buff[0] != 0x00 {
-			return fmt.Errorf("invalid success byte for EAP-TLS")
+			return metrics.Wrap(metrics.StageInnerAuth, metrics.ResultProtocolError,
+				fmt.Errorf("invalid success byte for EAP-TLS"))
 		}
 	}
 
@@ -145,7 +196,9 @@ func (tt *TLS) Authenticate(certpath, keyLogFilename string) error {
 		return err
 	}
 	if rd.Header.Code != CodeSuccess {
-		return fmt.Errorf("authentication failed")
+		// Provisional: Classify downgrades this unless an Access-Reject was seen.
+		return metrics.Wrap(metrics.StageInnerAuth, metrics.ResultReject,
+			fmt.Errorf("authentication failed"))
 	}
 
 	// extract key material
@@ -285,7 +338,28 @@ func (tt *TLS) SetWriteDeadline(t time.Time) error {
 	return tt.Tunnel.SetWriteDeadline(t)
 }
 
+// recordConnectionState captures the negotiated handshake parameters. It is
+// wired as tls.Config.VerifyConnection, which runs during the handshake and so
+// fires even on paths where the handshake later fails. It must never return an
+// error: metrics collection does not get to fail a handshake.
+func (tt *TLS) recordConnectionState(cs tls.ConnectionState) error {
+	tt.Metrics.RecordConnectionState(tt.Layer, cs)
+	return nil
+}
+
+// verifyCertificateChain verifies the peer chain against the CA passed on the
+// command line, and records what it saw.
+//
+// Two things are deliberate here. The certificate details are recorded even
+// when verification fails, which is what keeps "the server certificate
+// expired" distinguishable from "the server was unreachable". And the name
+// match is computed separately and only reported, never enforced, so that
+// --tls-skip-hostname-check still yields the metric without changing what the
+// client accepts.
 func (tt *TLS) verifyCertificateChain(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	if len(rawCerts) == 0 {
+		return errors.New("verifyCertificateChain: peer presented no certificates")
+	}
 	certs := make([]*x509.Certificate, len(rawCerts))
 	for i, asn1Data := range rawCerts {
 		cert, err := x509.ParseCertificate(asn1Data)
@@ -294,6 +368,11 @@ func (tt *TLS) verifyCertificateChain(rawCerts [][]byte, verifiedChains [][]*x50
 		}
 		certs[i] = cert
 	}
+
+	// Evaluate before returning, so a failed chain still reports subject,
+	// serial and expiry.
+	tt.Metrics.RecordServerChain(tt.Layer,
+		metrics.EvaluateServerChain(certs, tt.rootCAs, tt.serverName, time.Now()))
 
 	opts := x509.VerifyOptions{
 		Roots:         tt.rootCAs,

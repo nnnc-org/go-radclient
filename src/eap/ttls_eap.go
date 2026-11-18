@@ -17,7 +17,10 @@ type TtlsEAP struct {
 
 func CreateTtlsEAP(session *Session, caCert, tlsVersion, serverName, tlsTunnelKeyLogFilename string, tlsSkipHostnameCheck bool) (*TtlsEAP, error) {
 	ttls, err := CreateTTLS(session, caCert, tlsVersion, serverName, tlsTunnelKeyLogFilename, tlsSkipHostnameCheck)
-	return &TtlsEAP{ttls}, err
+	if err != nil {
+		return nil, err
+	}
+	return &TtlsEAP{ttls}, nil
 }
 
 func (tt *TtlsEAP) MaxDataSize() int {
@@ -25,6 +28,9 @@ func (tt *TtlsEAP) MaxDataSize() int {
 }
 
 func (tt *TtlsEAP) Read(b []byte) (int, error) {
+	if err := tt.Handshake(); err != nil {
+		return 0, err
+	}
 	d := &diameter.AttributeValuePair{}
 	n, err := d.ReadFrom(tt.client)
 	if err != nil {
@@ -37,6 +43,9 @@ func (tt *TtlsEAP) Read(b []byte) (int, error) {
 }
 
 func (tt *TtlsEAP) Write(b []byte) (int, error) {
+	if err := tt.Handshake(); err != nil {
+		return 0, err
+	}
 	n, err := diameter.AttributeValuePair{
 		Code:  diameter.CodeEapMessage,
 		Flags: diameter.FlagsMandatory,

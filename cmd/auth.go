@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/markeytos/radius-client/src/eap"
+	"github.com/markeytos/radius-client/src/metrics"
 	"github.com/markeytos/radius-client/src/radius"
 	"github.com/spf13/cobra"
 )
@@ -78,6 +79,12 @@ var authUdpCmd = &cobra.Command{
 	Args:    cobra.ExactArgs(3),
 	PreRunE: prerun,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		collector.SetInvocation("auth", "udp", args[2], "udp", args[0])
+		registerSecrets(args[1])
+		collector.ExpectLayer(expectedLayers(args[2])...)
+		if err := preloadProbeCerts(args[2]); err != nil {
+			return err
+		}
 		return retry(func() error {
 			return auth(func() (*radius.AuthenticationSession, string, error) {
 				session, err := newUDPAuthSession(args[0], args[1], udpMTUSize, sendAttributes, receiveAttributes)
@@ -93,6 +100,14 @@ var authTlsCmd = &cobra.Command{
 	Args:    cobra.ExactArgs(4),
 	PreRunE: prerun,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		collector.SetInvocation("auth", "tls", args[3], "radsec", args[0])
+		// The RadSec shared secret is fixed by RFC 6614, so there is no secret
+		// positional argument on this subcommand.
+		registerSecrets("")
+		collector.ExpectLayer(expectedLayers(args[3])...)
+		if err := preloadProbeCerts(args[3]); err != nil {
+			return err
+		}
 		return retry(func() error {
 			return auth(func() (*radius.AuthenticationSession, string, error) {
 				session, err := newTLSAuthSession(args[0], args[1], args[2], sendAttributes, receiveAttributes)
@@ -132,6 +147,9 @@ func auth(f func() (*radius.AuthenticationSession, string, error), protocol stri
 	defer func() {
 		err := session.Close()
 		if err != nil {
+			// Kept apart from the exchange outcome: a late close failure must
+			// not read as a failed authentication.
+			collector.SetCloseError(err)
 			slog.Error("failed to close session",
 				"command", "auth",
 				"protocol", protocol,
@@ -169,17 +187,21 @@ func internalAuth(session *radius.AuthenticationSession, serverName, protocol st
 	if !strings.HasPrefix(protocol, "eap-") && !strings.HasPrefix(protocol, "peap-") && protocol != authMabEapMd5 {
 		return fmt.Errorf("unknown protocol picked: %s", protocol)
 	}
+	// Scoped to this attempt: mutating the package global would leak into
+	// every later retry.
+	anonUsername := anonymousUsername
 	if protocol == authMabEapMd5 {
-		anonymousUsername = macAddress
+		anonUsername = macAddress
 	}
 
-	eaptunnel := radius.NewEapAuthenticationTunnel(session, anonymousUsername)
+	eaptunnel := radius.NewEapAuthenticationTunnel(session, anonUsername)
 	if eaptunnel == nil {
 		return fmt.Errorf("failed to create EAP tunnel")
 	}
 	// nolint:errcheck // function does not return error
 	defer eaptunnel.Close()
-	eapsession := eap.NewSession(eaptunnel, anonymousUsername, eapSendStart)
+	eapsession := eap.NewSession(eaptunnel, anonUsername, eapSendStart)
+	eapsession.Metrics = session.Metrics
 	err := eapAuth(eapsession, serverName, protocol)
 	if err != nil {
 		return err
@@ -198,37 +220,48 @@ func eapAuth(session *eap.Session, serverName, protocol string) error {
 		if err != nil {
 			return err
 		}
+		eaptls.SetMetrics(collector, metrics.LayerEAP)
 		return eaptls.Authenticate(clientCertificate, tlsAuthenticationKeyLogFilename)
 	case authEapTtlsPAP:
 		eapttls, err := eap.CreateTTLS(session, tunnelCACertificate, tlsVersion, serverName, tlsTunnelKeyLogFilename, tlsSkipHostnameCheck)
 		if err != nil {
 			return err
 		}
+		eapttls.SetMetrics(collector, metrics.LayerEAP)
 		return eapttls.PAP(username, password)
 	case authEapTtlsEapMsCHAPv2:
 		eapttls, err := eap.CreateTtlsEAP(session, tunnelCACertificate, tlsVersion, serverName, tlsTunnelKeyLogFilename, tlsSkipHostnameCheck)
 		if err != nil {
 			return err
 		}
+		eapttls.SetMetrics(collector, metrics.LayerEAP)
 		ts := eap.NewSession(eapttls, anonymousUsername, false)
+		ts.Metrics = collector
 		return ts.MsCHAPv2(username, password)
 	case authEapTtlsEapTLS:
 		eapttls, err := eap.CreateTtlsEAP(session, tunnelCACertificate, tlsVersion, serverName, tlsTunnelKeyLogFilename, tlsSkipHostnameCheck)
 		if err != nil {
 			return err
 		}
+		// Two handshakes here, reported separately: the outer tunnel and the
+		// inner EAP-TLS, each with its own CA and its own certificate.
+		eapttls.SetMetrics(collector, metrics.LayerEAP)
 		ts := eap.NewSession(eapttls, anonymousUsername, false)
+		ts.Metrics = collector
 		eaptls, err := eap.CreateTLS(ts, caCertificate, tlsVersion, tlsSkipHostnameCheck)
 		if err != nil {
 			return err
 		}
+		eaptls.SetMetrics(collector, metrics.LayerEAPInner)
 		return eaptls.Authenticate(clientCertificate, tlsAuthenticationKeyLogFilename)
 	case authPeapMsCHAPv2:
 		peap, err := eap.CreatePEAP(session, tunnelCACertificate, tlsVersion, serverName, tlsTunnelKeyLogFilename, tlsSkipHostnameCheck)
 		if err != nil {
 			return err
 		}
+		peap.SetMetrics(collector, metrics.LayerEAP)
 		ts := eap.NewSession(peap, anonymousUsername, true)
+		ts.Metrics = collector
 		return ts.MsCHAPv2(username, password)
 	default:
 		return fmt.Errorf("unknown protocol picked: %s", protocol)
@@ -268,4 +301,49 @@ func missingValues(protocol string) (mv []string) {
 		mv = append(mv, "tunnel-ca-cert")
 	}
 	return
+}
+
+// expectedLayers names the TLS handshakes a protocol performs, so that a layer
+// which never materializes can be reported as unknown rather than as not
+// applicable. The distinction is what keeps a timeout from reading as an
+// invalid certificate.
+//
+// The RadSec transport layer is declared by dialTLS instead, since it depends
+// on the subcommand rather than on the protocol.
+func expectedLayers(protocol string) []metrics.Layer {
+	switch protocol {
+	case authEapTLS, authEapTtlsPAP, authEapTtlsEapMsCHAPv2, authPeapMsCHAPv2:
+		// One handshake: either plain EAP-TLS or the PEAP/TTLS tunnel. Both are
+		// the certificate a supplicant validates.
+		return []metrics.Layer{metrics.LayerEAP}
+	case authEapTtlsEapTLS:
+		// Two independent handshakes: the outer TTLS tunnel and an inner
+		// EAP-TLS inside it.
+		return []metrics.Layer{metrics.LayerEAP, metrics.LayerEAPInner}
+	}
+	// mab, mab-eap-md5, pap and eap-ms-chapv2 terminate no TLS of their own.
+	return nil
+}
+
+// clientCertLayer names the handshake our own certificate is presented on.
+// For EAP-TLS inside an EAP-TTLS tunnel that is the inner handshake.
+func clientCertLayer(protocol string) metrics.Layer {
+	if protocol == authEapTtlsEapTLS {
+		return metrics.LayerEAPInner
+	}
+	return metrics.LayerEAP
+}
+
+// preloadProbeCerts parses our own certificate before any dialing, so that
+// client_cert expiry is reported even when the server is unreachable. Warning
+// ahead of the probe's own certificate expiring is the whole point of that
+// metric, and it would be useless if it only worked while the server was up.
+//
+// A failure here is a config error: the probe never gets to run.
+func preloadProbeCerts(protocol string) error {
+	if _, ok := requireClientAndCACertificate[protocol]; !ok {
+		return nil
+	}
+	_, err := loadClientCert(clientCertificate, clientCertLayer(protocol))
+	return err
 }

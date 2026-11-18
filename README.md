@@ -173,6 +173,60 @@ in the `Access-Accept` packet.
 
 You can view all attributes and their values can be defined in this [document](./RADIUS_ATTRIBUTES.md).
 
+### JSON metrics output
+
+Adding `--json` makes the client behave as a monitoring probe: instead of
+logging text it writes a single JSON document to stdout describing the
+authentication — outcome, timing, where it failed, and certificate validity and
+expiry for every TLS layer in the exchange.
+
+```bash
+radius-client --json auth udp "$RADIUS_SERVER" "$SHARED_SECRET" eap-tls \
+    --client-cert ./probe.pem --ca-cert ./server-ca.pem
+```
+
+```json
+{
+  "schema_version": 1,
+  "probe": { "version": "v1.0.0", "protocol": "eap-tls", "ran": true, "duration_ms": 437.218 },
+  "auth": { "success": true, "result": "accept", "response_code": "Access-Accept", "duration_ms": 388.1, "attempts": 1 },
+  "radius": { "packets_sent": 12, "packets_received": 11, "jitter_total_ms": 0 },
+  "tls": { "layers": { "eap": {
+      "status": "observed", "version": "1.2", "handshake_duration_ms": 142.55,
+      "server_cert": { "status": "observed", "valid": true, "expires_in_seconds": 29518400,
+                       "subject": "CN=radius.example.com", "sha256": "9f86d081..." } } } },
+  "client_cert": { "status": "observed", "valid_now": true, "expires_in_seconds": 14518400 }
+}
+```
+
+Without the flag, output and exit codes are unchanged.
+
+Two things the document is careful about:
+
+- **Authentication success and certificate validity are separate.** A wrong
+  password can follow a perfectly valid certificate. If the exchange never got
+  far enough to see a certificate, its status is `unavailable` — unknown — and
+  never invalid.
+- **Causes are not guessed.** `auth.result` is `reject` only when an
+  `Access-Reject` actually arrived. A failed handshake or a timeout is reported
+  as `tls_error` or `timeout`, never as the server rejecting what we presented.
+
+Exit codes in JSON mode: **0** when the probe ran, whatever the server said —
+including a timeout, which is data. **2** only when the probe could not run,
+such as a bad flag or an unreadable certificate. A probe that exits non-zero
+loses its output in most monitoring systems, so a server being down must not
+be reported that way.
+
+`--json` also defaults `--min-send-jitter` and `--max-send-jitter` to `0s`,
+since the usual 50ms–1s sleep before every packet would otherwise dominate the
+latency figures. An explicit value is still honoured.
+
+It currently applies to the `authentication` command; `accounting` and `status`
+fail with exit code 2 rather than printing unparseable text.
+
+- [Full field reference](./docs/json-output.md)
+- [Zabbix items and triggers](./docs/zabbix.md)
+
 ### Accounting
 
 Accounting can be tested against a Classic RADIUS endpoint and RadSec.

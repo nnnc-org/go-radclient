@@ -11,7 +11,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"log"
 )
 
 /*
@@ -98,7 +97,7 @@ func CreateEmptyResponse(c *Challenge, uname string) *Response {
 	}
 	_, err := rand.Read(r.PeerChallenge[:])
 	if err != nil {
-		log.Fatal(err)
+		panic(fmt.Errorf("mschapv2: could not read peer challenge: %w", err))
 	}
 	return r
 }

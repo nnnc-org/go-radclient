@@ -8,7 +8,6 @@ package mschapv2
 import (
 	"crypto/des"
 	"crypto/sha1"
-	"log"
 	"unicode/utf16"
 
 	// nolint:staticcheck // SA1019 protocol requires MD4
@@ -17,10 +16,10 @@ import (
 
 func ChallengeHash(peerc, authc []byte, uname string) []byte {
 	if len(peerc) != 16 {
-		log.Fatal("peer challenge must be of size 16")
+		panic("mschapv2: peer challenge must be of size 16")
 	}
 	if len(authc) != 16 {
-		log.Fatal("authentication  challenge must be of size 16")
+		panic("mschapv2: authentication challenge must be of size 16")
 	}
 
 	h := sha1.New()
@@ -32,10 +31,10 @@ func ChallengeHash(peerc, authc []byte, uname string) []byte {
 
 func WriteNTResponse(dst, pwh, chall []byte) {
 	if len(dst) != 24 {
-		log.Fatal("destination slice must be of size 24")
+		panic("mschapv2: destination slice must be of size 24")
 	}
 	if len(chall) != 8 {
-		log.Fatal("destination slice must be of size 8")
+		panic("mschapv2: challenge slice must be of size 8")
 	}
 
 	zpw := make([]byte, 21)
@@ -150,7 +149,7 @@ func SessionKeys(pwhh, ntResponse []byte) (recvKey, sendKey []byte) {
 
 func withParityBits(k []byte) []byte {
 	if len(k) != 7 {
-		log.Fatal("key must be 56 bits")
+		panic("mschapv2: key must be 56 bits")
 	}
 	newKey := make([]byte, 8)
 	newKey[0] = k[0] & 0xfe
