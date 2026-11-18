@@ -42,7 +42,11 @@
             inherit version;
             src = self;
 
-            vendorHash = "sha256-6H/Jiddg7SPEPd2Itd4viqn4mSYDcZ3nNLHAj9jAxOk=";
+            # Hash of the Go module dependencies. It goes stale whenever go.mod
+            # changes, and the build then fails with a hash mismatch. To
+            # regenerate: set this to lib.fakeHash, run nix build, and copy the
+            # hash the error reports as "got".
+            vendorHash = "sha256-rhfKDYjFNrHzh0scuzfRZh2MUEoAUmSWu3qYoPKakYo=";
 
             # The module is named go-radclient, so the toolchain names the
             # binary after it. Every doc and example calls the command
