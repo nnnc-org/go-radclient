@@ -46,8 +46,12 @@ type TLS struct {
 	// after the handshake. Without it, EAP-TLS -- the protocol that matters
 	// most for certificate monitoring -- would expose nothing.
 	conn *tls.Conn
-	// serverName is the identity the peer certificate is expected to carry. It
-	// is used for reporting the name match, never to change verification.
+	// serverName is the identity the peer certificate is expected to carry, as
+	// given by --server-name. There is no SNI in EAP, and the RADIUS address is
+	// a proxy hop rather than the EAP server -- across a roaming federation the
+	// two are never the same host -- so an operator-supplied name is the only
+	// one worth checking. Empty means there is nothing to check, which is what
+	// eapol_test does without domain_suffix_match.
 	serverName string
 	// insecure means no trust anchor was configured, so the peer certificate
 	// is observed and reported but not verified.
@@ -74,11 +78,11 @@ func (tt *TLS) ConnectionState() (tls.ConnectionState, bool) {
 	return cs, cs.HandshakeComplete
 }
 
-func CreateTLS(session *Session, caCert, tlsVersion string, skipHostnameCheck bool) (*TLS, error) {
-	return internalCreateTLS(session, caCert, tlsVersion, skipHostnameCheck, TypeTLS)
+func CreateTLS(session *Session, caCert, tlsVersion, serverName string, skipHostnameCheck bool) (*TLS, error) {
+	return internalCreateTLS(session, caCert, tlsVersion, serverName, skipHostnameCheck, TypeTLS)
 }
 
-func internalCreateTLS(session *Session, caCert, tlsVersion string, skipHostnameCheck bool, pt Type) (*TLS, error) {
+func internalCreateTLS(session *Session, caCert, tlsVersion, serverName string, skipHostnameCheck bool, pt Type) (*TLS, error) {
 	// An empty path means --insecure: there is no trust anchor, so the peer
 	// certificate gets observed and reported but not verified. A nil pool is
 	// what signals that, since leaving it empty instead would fail every
@@ -119,8 +123,40 @@ func internalCreateTLS(session *Session, caCert, tlsVersion string, skipHostname
 		tlsVersion:        tlsv,
 		packetType:        pt,
 		skipHostnameCheck: skipHostnameCheck,
+		serverName:        serverName,
 		insecure:          rootCAs == nil,
 	}, nil
+}
+
+// hostnameEnforced reports whether the handshake should reject a peer
+// certificate whose name does not match.
+//
+// It does so only when an expected name was supplied: with no name there is
+// nothing to compare against, and with no trust anchor the chain is
+// unverifiable anyway, so letting the stdlib verify would quietly fall back to
+// the system roots.
+func (tt *TLS) hostnameEnforced() bool {
+	return tt.serverName != "" && !tt.skipHostnameCheck && !tt.insecure
+}
+
+// baseTLSConfig builds the handshake configuration common to EAP-TLS and the
+// tunnelled methods, so the three of them cannot drift apart on what they
+// verify.
+//
+// InsecureSkipVerify governs only the stdlib's own verification, which is the
+// sole thing that would enforce the name. The chain is verified either way:
+// verifyCertificateChain runs on every path and returns the verification
+// error unless no CA was configured at all.
+func (tt *TLS) baseTLSConfig() *tls.Config {
+	return &tls.Config{
+		RootCAs:               tt.rootCAs,
+		MinVersion:            tt.tlsVersion,
+		MaxVersion:            tt.tlsVersion,
+		ServerName:            tt.serverName,
+		InsecureSkipVerify:    !tt.hostnameEnforced(),
+		VerifyPeerCertificate: tt.verifyCertificateChain,
+		VerifyConnection:      tt.recordConnectionState,
+	}
 }
 
 func (tt *TLS) Authenticate(certpath, keyLogFilename string) error {
@@ -137,22 +173,9 @@ func (tt *TLS) Authenticate(certpath, keyLogFilename string) error {
 		tt.Metrics.RecordLayerClientCert(tt.Layer,
 			metrics.EvaluateClientCert(cert.Leaf, &keyMatch, time.Now()))
 	}
-	h, _, err := net.SplitHostPort(tt.RemoteAddr().String())
-	if err != nil {
-		return err
-	}
-	tt.serverName = h
-	tlsConfig := &tls.Config{
-		RootCAs:               tt.rootCAs,
-		Certificates:          []tls.Certificate{cert},
-		ServerName:            h,
-		MinVersion:            tt.tlsVersion,
-		MaxVersion:            tt.tlsVersion,
-		InsecureSkipVerify:    tt.skipHostnameCheck || tt.insecure,
-		VerifyPeerCertificate: tt.verifyCertificateChain,
-		VerifyConnection:      tt.recordConnectionState,
-		Renegotiation:         tls.RenegotiateNever,
-	}
+	tlsConfig := tt.baseTLSConfig()
+	tlsConfig.Certificates = []tls.Certificate{cert}
+	tlsConfig.Renegotiation = tls.RenegotiateNever
 	if keyLogFilename != "" {
 		f, err := os.OpenFile(keyLogFilename, os.O_CREATE|os.O_WRONLY, 0600)
 		if err != nil {

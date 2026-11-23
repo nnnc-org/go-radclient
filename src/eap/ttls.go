@@ -26,21 +26,12 @@ type TTLS struct {
 }
 
 func CreateTTLS(session *Session, caCert, tlsVersion, serverName, tlsTunnelKeyLogFilename string, tlsSkipHostnameCheck bool) (*TTLS, error) {
-	t, err := internalCreateTLS(session, caCert, tlsVersion, tlsSkipHostnameCheck, TypeTTLS)
+	t, err := internalCreateTLS(session, caCert, tlsVersion, serverName, tlsSkipHostnameCheck, TypeTTLS)
 	if err != nil {
 		return nil, err
 	}
-	tlsConfig := &tls.Config{
-		RootCAs:                t.rootCAs,
-		MinVersion:             t.tlsVersion,
-		MaxVersion:             t.tlsVersion,
-		SessionTicketsDisabled: true,
-		InsecureSkipVerify:     tlsSkipHostnameCheck || t.insecure,
-		ServerName:             serverName,
-		VerifyPeerCertificate:  t.verifyCertificateChain,
-		VerifyConnection:       t.recordConnectionState,
-	}
-	t.serverName = serverName
+	tlsConfig := t.baseTLSConfig()
+	tlsConfig.SessionTicketsDisabled = true
 	var ttls *TTLS
 	if tlsTunnelKeyLogFilename != "" {
 		f, err := os.OpenFile(tlsTunnelKeyLogFilename, os.O_CREATE|os.O_WRONLY, 0600)

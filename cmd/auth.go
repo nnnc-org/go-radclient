@@ -11,6 +11,7 @@ import (
 	"github.com/nnnc-org/go-radclient/src/eap"
 	"github.com/nnnc-org/go-radclient/src/metrics"
 	"github.com/nnnc-org/go-radclient/src/radius"
+	"github.com/nnnc-org/go-radclient/src/trace"
 	"github.com/spf13/cobra"
 )
 
@@ -64,6 +65,7 @@ var (
 	tlsVersion           string
 	eapSendStart         bool
 	tlsSkipHostnameCheck bool
+	expectedServerName   string
 )
 
 var authCmd = &cobra.Command{
@@ -86,9 +88,8 @@ var authUdpCmd = &cobra.Command{
 			return err
 		}
 		return retry(func() error {
-			return auth(func() (*radius.AuthenticationSession, string, error) {
-				session, err := newUDPAuthSession(args[0], args[1], udpMTUSize, sendAttributes, receiveAttributes)
-				return session, args[0], err
+			return auth(func() (*radius.AuthenticationSession, error) {
+				return newUDPAuthSession(args[0], args[1], udpMTUSize, sendAttributes, receiveAttributes)
 			}, args[2])
 		})
 	},
@@ -109,9 +110,8 @@ var authTlsCmd = &cobra.Command{
 			return err
 		}
 		return retry(func() error {
-			return auth(func() (*radius.AuthenticationSession, string, error) {
-				session, err := newTLSAuthSession(args[0], args[1], args[2], sendAttributes, receiveAttributes)
-				return session, args[0], err
+			return auth(func() (*radius.AuthenticationSession, error) {
+				return newTLSAuthSession(args[0], args[1], args[2], sendAttributes, receiveAttributes)
 			}, args[3])
 		})
 	},
@@ -128,6 +128,11 @@ func init() {
 	authCmd.PersistentFlags().StringVar(&tlsVersion, "tls-version", "1.2", "TLS version underlying TLS-based protocols")
 	authCmd.PersistentFlags().BoolVar(&eapSendStart, "eap-send-start", false, "EAP send EAP-Start")
 	authCmd.PersistentFlags().BoolVar(&tlsSkipHostnameCheck, "tls-skip-hostname-check", false, "TLS skip Hostname check in handshake")
+	// The EAP server is reached through the RADIUS address, but is not that
+	// host: across a roaming federation the certificate names the home
+	// institution's server. So the expected name has to be stated, and when it
+	// is not, the chain is verified and the name only reported.
+	authCmd.PersistentFlags().StringVar(&expectedServerName, "server-name", "", "Expected EAP/tunnel server certificate name; unset means the chain is verified but the name is not checked")
 
 	// username and password are no longer required together: a missing
 	// password is prompted for instead, and cobra would reject the
@@ -136,8 +141,8 @@ func init() {
 	authCmd.AddCommand(authUdpCmd, authTlsCmd)
 }
 
-func auth(f func() (*radius.AuthenticationSession, string, error), protocol string) error {
-	session, serverName, err := f()
+func auth(f func() (*radius.AuthenticationSession, error), protocol string) error {
+	session, err := f()
 	if err != nil {
 		slog.Error("failed to create session",
 			"command", "auth",
@@ -159,7 +164,7 @@ func auth(f func() (*radius.AuthenticationSession, string, error), protocol stri
 			)
 		}
 	}()
-	err = internalAuth(session, serverName, protocol)
+	err = internalAuth(session, protocol)
 	if err != nil {
 		slog.Error("failed authentication",
 			"network", session.RemoteAddr().Network(),
@@ -179,7 +184,7 @@ func auth(f func() (*radius.AuthenticationSession, string, error), protocol stri
 	return nil
 }
 
-func internalAuth(session *radius.AuthenticationSession, serverName, protocol string) error {
+func internalAuth(session *radius.AuthenticationSession, protocol string) error {
 	switch protocol {
 	case authMAB:
 		return session.MAB(macAddress)
@@ -204,44 +209,47 @@ func internalAuth(session *radius.AuthenticationSession, serverName, protocol st
 	defer eaptunnel.Close()
 	eapsession := eap.NewSession(eaptunnel, anonUsername, eapSendStart)
 	eapsession.Metrics = session.Metrics
-	err := eapAuth(eapsession, serverName, protocol)
+	eapsession.Trace = tracer
+	err := eapAuth(eapsession, protocol)
 	if err != nil {
 		return err
 	}
 	return session.VerifyEAP(eapsession.RecvKey, eapsession.SendKey)
 }
 
-func eapAuth(session *eap.Session, serverName, protocol string) error {
+func eapAuth(session *eap.Session, protocol string) error {
 	switch protocol {
 	case authMabEapMd5:
 		return session.MD5(macAddress)
 	case authEapMsCHAPv2:
 		return session.MsCHAPv2(username, password)
 	case authEapTLS:
-		eaptls, err := eap.CreateTLS(session, caCertificate, tlsVersion, tlsSkipHostnameCheck)
+		eaptls, err := eap.CreateTLS(session, caCertificate, tlsVersion, expectedServerName, tlsSkipHostnameCheck)
 		if err != nil {
 			return err
 		}
 		eaptls.SetMetrics(collector, metrics.LayerEAP)
 		return eaptls.Authenticate(clientCertificate, tlsAuthenticationKeyLogFilename)
 	case authEapTtlsPAP:
-		eapttls, err := eap.CreateTTLS(session, tunnelCACertificate, tlsVersion, serverName, tlsTunnelKeyLogFilename, tlsSkipHostnameCheck)
+		eapttls, err := eap.CreateTTLS(session, tunnelCACertificate, tlsVersion, expectedServerName, tlsTunnelKeyLogFilename, tlsSkipHostnameCheck)
 		if err != nil {
 			return err
 		}
 		eapttls.SetMetrics(collector, metrics.LayerEAP)
 		return eapttls.PAP(username, password)
 	case authEapTtlsEapMsCHAPv2:
-		eapttls, err := eap.CreateTtlsEAP(session, tunnelCACertificate, tlsVersion, serverName, tlsTunnelKeyLogFilename, tlsSkipHostnameCheck)
+		eapttls, err := eap.CreateTtlsEAP(session, tunnelCACertificate, tlsVersion, expectedServerName, tlsTunnelKeyLogFilename, tlsSkipHostnameCheck)
 		if err != nil {
 			return err
 		}
 		eapttls.SetMetrics(collector, metrics.LayerEAP)
 		ts := eap.NewSession(eapttls, innerIdentity(), false)
 		ts.Metrics = collector
+		ts.Trace = tracer
+		ts.TraceLayer = trace.LayerEAPInner
 		return ts.MsCHAPv2(username, password)
 	case authEapTtlsEapTLS:
-		eapttls, err := eap.CreateTtlsEAP(session, tunnelCACertificate, tlsVersion, serverName, tlsTunnelKeyLogFilename, tlsSkipHostnameCheck)
+		eapttls, err := eap.CreateTtlsEAP(session, tunnelCACertificate, tlsVersion, expectedServerName, tlsTunnelKeyLogFilename, tlsSkipHostnameCheck)
 		if err != nil {
 			return err
 		}
@@ -250,20 +258,24 @@ func eapAuth(session *eap.Session, serverName, protocol string) error {
 		eapttls.SetMetrics(collector, metrics.LayerEAP)
 		ts := eap.NewSession(eapttls, innerIdentity(), false)
 		ts.Metrics = collector
-		eaptls, err := eap.CreateTLS(ts, caCertificate, tlsVersion, tlsSkipHostnameCheck)
+		ts.Trace = tracer
+		ts.TraceLayer = trace.LayerEAPInner
+		eaptls, err := eap.CreateTLS(ts, caCertificate, tlsVersion, expectedServerName, tlsSkipHostnameCheck)
 		if err != nil {
 			return err
 		}
 		eaptls.SetMetrics(collector, metrics.LayerEAPInner)
 		return eaptls.Authenticate(clientCertificate, tlsAuthenticationKeyLogFilename)
 	case authPeapMsCHAPv2:
-		peap, err := eap.CreatePEAP(session, tunnelCACertificate, tlsVersion, serverName, tlsTunnelKeyLogFilename, tlsSkipHostnameCheck)
+		peap, err := eap.CreatePEAP(session, tunnelCACertificate, tlsVersion, expectedServerName, tlsTunnelKeyLogFilename, tlsSkipHostnameCheck)
 		if err != nil {
 			return err
 		}
 		peap.SetMetrics(collector, metrics.LayerEAP)
 		ts := eap.NewSession(peap, innerIdentity(), true)
 		ts.Metrics = collector
+		ts.Trace = tracer
+		ts.TraceLayer = trace.LayerEAPInner
 		return ts.MsCHAPv2(username, password)
 	default:
 		return fmt.Errorf("unknown protocol picked: %s", protocol)

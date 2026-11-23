@@ -174,6 +174,29 @@ $RADIUS_AUTH_COMMAND eap-tls --tunnel-ca-cert $SERVER_CA_CERT_PATH \
 The default TLS version supported is 1.2, 1.3 is supported but has not been tested,
 and it can be enabled by adding the flag `--tls-version 1.X`.
 
+#### Checking the server certificate name
+
+By default the server's chain is verified against `--ca-cert` (or
+`--tunnel-ca-cert`) but its *name* is not checked, which is what `eapol_test`
+does unless you give it `domain_suffix_match`. Pass `--server-name` to check
+the name as well:
+
+```bash
+$RADIUS_AUTH_COMMAND eap-tls --client-cert $CLIENT_CERT_PATH \
+    --ca-cert $SERVER_CA_CERT_PATH --server-name radius.example.org
+```
+
+The name has to be stated because there is nothing to derive it from. EAP
+carries no SNI, and the address you dial is a RADIUS hop rather than the EAP
+server — in a roaming federation such as eduroam you reach a top-level proxy,
+whose certificate belongs to the home institution's server and so matches
+neither the proxy's hostname nor its IP.
+
+Either way the name is reported under `--json` as `name_match`; with no
+`--server-name` it stays `null`, meaning unknown rather than mismatched.
+`--tls-skip-hostname-check` drops the check even when a name is supplied,
+leaving chain verification in place.
+
 #### Skipping server verification
 
 `--insecure` turns off server certificate verification at every layer. It makes
@@ -233,6 +256,45 @@ additional attributes to the server, and expects three attributes from the serve
 in the `Access-Accept` packet.
 
 You can view all attributes and their values can be defined in this [document](./RADIUS_ATTRIBUTES.md).
+
+### Packet tracing
+
+`-v` traces every packet to stderr as it goes past: the RADIUS code, identifier
+and decoded attributes, and the EAP code, identifier and type carried inside
+them. For the TLS based EAP types each line also names the EAP-TLS flags, the
+announced handshake length and the size of the fragment, which is what a
+handshake that stalls mid-exchange looks like. Repeat it (`-vv`) to add a hex
+dump of every packet.
+
+```bash
+$RADIUS_AUTH_COMMAND eap-tls --client-cert $CLIENT_CERT --ca-cert $CA_CERT -v
+```
+
+```text
+[   0.001] eap       --> Response id=251 len=14 type=Identity(1)
+             identity = "anonymous"
+[   0.001] radius    --> Access-Request id=169 len=86
+             EAP-Message = 0x02fb000e01616e6f6e796d6f7573
+             NAS-Identifier = "radius-client"
+             User-Name = "anonymous"
+[   0.112] radius    <-- Access-Challenge id=169 len=64
+             EAP-Message = 0x010100061520
+[   0.112] eap       <-- Request id=1 len=6 type=PEAP(25)
+             flags = S (0x20)
+             tls-fragment = 0 bytes
+```
+
+Lines marked `!!` are not packets but the events between them: a read that
+timed out, a retransmission, a reply that answered a different request. An
+inner EAP conversation inside a PEAP or EAP-TTLS tunnel is traced under
+`eap-inner`, so the tunnelled exchange stays distinguishable from the outer
+one.
+
+The trace always goes to stderr, so it can be combined with `--json`, which
+keeps stdout to itself. The shared secret and the password are redacted in the
+trace the same way they are in the JSON document. Values passed through
+`--attrs-to-send` are not: showing what was actually sent is the point of the
+flag.
 
 ### JSON metrics output
 
