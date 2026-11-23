@@ -137,14 +137,23 @@ func setupJSONOutput() {
 // document. The target address, username and MAC are not secrets and stay
 // readable, because they are what makes an error diagnosable.
 func registerSecrets(sharedSecret string) {
-	collector.AddSecrets(
+	secrets := []string{
 		sharedSecret,
 		password,
 		// RFC 6614 fixes the RadSec shared secret to this literal.
 		"radsec",
-	)
+	}
+	collector.AddSecrets(secrets...)
+	// --verbose prints the packets themselves, so it needs the same list.
+	tracer.AddSecrets(secrets...)
 	// A password passed through --attrs-to-send would otherwise be echoed back
 	// by parseAttributes on a malformed entry.
+	//
+	// Deliberately not registered with the tracer. --verbose exists to show
+	// the attributes that were sent, and these values came from this command
+	// line in the first place, so masking them hides exactly what was asked
+	// for — and because redaction is a substring replacement, a value like
+	// "Framed" would also rewrite the name of every attribute containing it.
 	for _, vals := range sendAttributes {
 		collector.AddSecrets(vals...)
 	}

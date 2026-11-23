@@ -12,13 +12,20 @@ import (
 	"net"
 
 	"github.com/nnnc-org/go-radclient/src/metrics"
+	"github.com/nnnc-org/go-radclient/src/trace"
 )
 
 type Session struct {
 	Tunnel EapTunnel
 	// Metrics is attached from package cmd after construction. It is promoted
 	// through TLS, PEAP, TTLS and TtlsEAP, and every method on it is nil-safe.
-	Metrics           *metrics.Collector
+	Metrics *metrics.Collector
+	// Trace is attached from package cmd alongside Metrics and is nil unless
+	// --verbose was given. TraceLayer names which EAP conversation this is, so
+	// that the inner session of a tunnelled protocol is distinguishable from
+	// the outer one; NewSession defaults it to the outer layer.
+	Trace             *trace.Tracer
+	TraceLayer        string
 	EAPSendStart      bool
 	AnonymousUsername string
 	RecvKey, SendKey  []byte
@@ -53,6 +60,7 @@ func NewSession(tunnel EapTunnel, anonymousUname string, eapSendStart bool) *Ses
 	}
 	return &Session{
 		Tunnel:            tunnel,
+		TraceLayer:        trace.LayerEAP,
 		EAPSendStart:      eapSendStart,
 		AnonymousUsername: anonymousUname,
 		identifier:        randUint8(),
@@ -86,6 +94,7 @@ func (s *Session) WriteDatagram(wd *Datagram) (int, error) {
 		s.lastAction = sessionLastActionError
 		return 0, s.lastErr
 	}
+	s.tracePacket(trace.Sent, wd)
 	n, err := wd.WriteTo(s.Tunnel)
 	if err != nil {
 		s.lastErr = fmt.Errorf("eap: error sending datagram: %w", err)
@@ -113,6 +122,7 @@ func (s *Session) ReadDatagram(rd *Datagram) (int, error) {
 		s.lastAction = sessionLastActionError
 		return int(n), s.lastErr
 	}
+	s.tracePacket(trace.Received, rd)
 	s.lastReadDatagram = rd
 	s.lastAction = sessionLastActionReadDatagram
 	return int(n), nil
@@ -159,7 +169,7 @@ func (s *Session) start(targetType Type) error {
 	}
 	if rd.Header.Code != CodeRequest {
 		return metrics.Wrap(metrics.StageEAPNegotiation, metrics.ResultProtocolError,
-			fmt.Errorf("unexpected EAP code in server response"))
+			fmt.Errorf("unexpected EAP code in server response: got %s, expected %s", rd.Header.Code, CodeRequest))
 	}
 	if rd.Content == nil {
 		return metrics.Wrap(metrics.StageEAPNegotiation, metrics.ResultProtocolError,

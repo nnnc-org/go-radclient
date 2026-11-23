@@ -6,6 +6,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"slices"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/nnnc-org/go-radclient/src/metrics"
 	"github.com/nnnc-org/go-radclient/src/radius"
+	"github.com/nnnc-org/go-radclient/src/trace"
 	"github.com/spf13/cobra"
 )
 
@@ -34,9 +36,18 @@ var (
 	maxWriteJitterStr               string
 	maxWriteJitter                  time.Duration
 	radsecUnsafe                    bool
+	verbosity                       int
 	insecure                        bool
 	tlsAuthenticationKeyLogFilename string
 	tlsTunnelKeyLogFilename         string
+)
+
+// tracer is the --verbose packet trace, nil when tracing is off. traceOut is
+// indirected the way stdout is in json.go, so that tests can capture the
+// trace; nothing else in this program writes there.
+var (
+	tracer   *trace.Tracer
+	traceOut io.Writer = os.Stderr
 )
 
 // Attribute variables, each string should be of the format `<label>:<value>[:<type>]`
@@ -77,6 +88,14 @@ for most common authentication protocol.`,
 			if !cmd.Flags().Changed("max-send-jitter") {
 				maxWriteJitterStr = "0s"
 			}
+		}
+
+		// Built here so that it exists before any session is constructed, and
+		// so that -v is honored even on a run that fails in this hook. The
+		// trace goes to stderr, which leaves the --json document on stdout
+		// intact and parseable.
+		if verbosity > 0 {
+			tracer = trace.New(traceOut, verbosity > 1)
 		}
 
 		if insecure {
@@ -145,6 +164,7 @@ func run(args []string) (code int) {
 	// so --json is detected by hand first.
 	jsonOutput = jsonModeRequested(args)
 	collector = metrics.New(probeVersion())
+	tracer = nil
 	rootCmd.SetArgs(args)
 
 	if !jsonOutput {
@@ -199,6 +219,11 @@ func init() {
 	rootCmd.PersistentFlags().IntVar(&udpMTUSize, "udp-mtu", 1500, "RADIUS/UDP connection MTU size")
 	rootCmd.PersistentFlags().StringVar(&udpTimeoutStr, "udp-timeout", "5s", "RADIUS/UDP connection response timeout")
 	rootCmd.PersistentFlags().IntVar(&tcpPort, "tcp-port", radius.RadSecTCPPort, "RADIUS/TLS (RadSec) port")
+	rootCmd.PersistentFlags().CountVarP(&verbosity, "verbose", "v", `Trace every packet to stderr: RADIUS codes and
+attributes, and the EAP codes, types and TLS
+fragments carried inside them. Repeat (-vv) to add a
+hex dump of each packet. Safe to combine with --json,
+which keeps stdout to itself.`)
 	rootCmd.PersistentFlags().BoolVar(&radsecUnsafe, "radsec-unsafe", false, "RADIUS/TLS (RadSec) skip server authentication")
 	rootCmd.PersistentFlags().BoolVar(&insecure, "insecure", false, `Do not verify server certificates at any layer. Makes
 --ca-cert and --tunnel-ca-cert optional, ignores the

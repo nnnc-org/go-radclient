@@ -194,12 +194,14 @@ func newTLSAcctSession(address, serverCA, clientCer string, sendattrs, recvattrs
 	return withAcctMetrics(radius.NewAccountingSession(conn, "radsec", tlsTimeout, minWriteJitter, maxWriteJitter, 1, radius.DatagramMaxLen, sendattrs, recvattrs))
 }
 
-// withAuthMetrics attaches the collector to a freshly built session. Metrics is
-// an exported field promoted from the embedded radius session, so attaching it
-// here needs no change to any constructor signature.
+// withAuthMetrics attaches the collector and the packet tracer to a freshly
+// built session. Both are exported fields promoted from the embedded radius
+// session, so attaching them here needs no change to any constructor
+// signature.
 func withAuthMetrics(s *radius.AuthenticationSession, err error) (*radius.AuthenticationSession, error) {
 	if s != nil {
 		s.Metrics = collector
+		s.Trace = tracer
 	}
 	return s, err
 }
@@ -207,6 +209,7 @@ func withAuthMetrics(s *radius.AuthenticationSession, err error) (*radius.Authen
 func withAcctMetrics(s *radius.AccountingSession, err error) (*radius.AccountingSession, error) {
 	if s != nil {
 		s.Metrics = collector
+		s.Trace = tracer
 	}
 	return s, err
 }

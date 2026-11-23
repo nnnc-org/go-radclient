@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/nnnc-org/go-radclient/src/metrics"
+	"github.com/nnnc-org/go-radclient/src/trace"
 )
 
 type session struct {
@@ -26,7 +27,10 @@ type session struct {
 	// and AccountingSession and can be attached from package cmd after
 	// construction, without changing any constructor signature. Every method
 	// on it is nil-safe.
-	Metrics             *metrics.Collector
+	Metrics *metrics.Collector
+	// Trace is attached from package cmd the same way as Metrics, and is nil
+	// unless --verbose was given. Every method on it is nil-safe.
+	Trace               *trace.Tracer
 	identifier          uint8
 	sharedSecret        string
 	timeout             time.Duration
@@ -117,6 +121,7 @@ func (s *session) WriteDatagram(wd *Datagram) (int, error) {
 		return int(n), fmt.Errorf("error sending RADIUS datagram: %w", err)
 	}
 	s.Metrics.AddSent()
+	s.tracePacket(trace.Sent, wd)
 	s.lastWrittenDatagram = wd
 	return int(n), nil
 }
@@ -132,12 +137,17 @@ func (s *session) ReadDatagram(rd *Datagram) (int, error) {
 		n, err = rd.ReadFrom(s)
 		if err == nil {
 			s.Metrics.AddReceived()
+			s.tracePacket(trace.Received, rd)
 			if rd.Header.Identifier == s.identifier {
 				break
 			}
 			// Something answered, it just did not answer this request. Without
 			// counting it, this is indistinguishable from the timeout below.
+			s.Trace.Note(trace.LayerRADIUS, "ignoring response id=%d: this request is id=%d",
+				rd.Header.Identifier, s.identifier)
 			s.Metrics.RecordIdentifierMismatch()
+		} else {
+			s.Trace.Note(trace.LayerRADIUS, "no usable response: %v", err)
 		}
 		// The read failed or answered a different request. Only retransmit when
 		// another read attempt will follow: retransmitting on the final iteration
@@ -145,6 +155,8 @@ func (s *session) ReadDatagram(rd *Datagram) (int, error) {
 		if i == s.retries-1 {
 			break
 		}
+		s.Trace.Note(trace.LayerRADIUS, "retransmitting request id=%d (attempt %d of %d)",
+			s.identifier, i+2, s.retries)
 		_, werr := s.WriteDatagram(s.lastWrittenDatagram)
 		if werr != nil {
 			return 0, fmt.Errorf("error sending RADIUS datagram in receive retry: %w", werr)
