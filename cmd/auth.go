@@ -54,6 +54,24 @@ var (
 	}
 )
 
+// authProtocols is the PROTOCOL argument's accepted values, in the order the
+// help lists them: the bare methods first, then the tunnelled ones.
+//
+// The flags each protocol needs are deliberately not repeated here. They are
+// read back out of the require* sets above, so the help cannot come to disagree
+// with what prerun enforces.
+var authProtocols = []string{
+	authMAB,
+	authMabEapMd5,
+	authPAP,
+	authEapMsCHAPv2,
+	authEapTLS,
+	authEapTtlsPAP,
+	authEapTtlsEapMsCHAPv2,
+	authEapTtlsEapTLS,
+	authPeapMsCHAPv2,
+}
+
 var (
 	macAddress           string
 	username             string
@@ -137,6 +155,12 @@ func init() {
 	// username and password are no longer required together: a missing
 	// password is prompted for instead, and cobra would reject the
 	// combination before we got the chance.
+
+	// Both subcommands take the same PROTOCOL argument, so both explain it.
+	// Set here rather than in the literals to keep the one description in one
+	// place.
+	authUdpCmd.Long = authUdpCmd.Short + "\n\n" + protocolHelp()
+	authTlsCmd.Long = authTlsCmd.Short + "\n\n" + protocolHelp()
 
 	authCmd.AddCommand(authUdpCmd, authTlsCmd)
 }
@@ -319,6 +343,37 @@ func missingValues(protocol string) (mv []string) {
 		}
 	}
 	return
+}
+
+// protocolFlags names the flags a protocol authenticates with, in the same
+// order missingValues reports them, so that -h and the "missing values" error
+// read alike.
+func protocolFlags(protocol string) (f []string) {
+	if _, ok := requireMACAddress[protocol]; ok {
+		f = append(f, "--mac")
+	}
+	if _, ok := requireUsernameAndPassword[protocol]; ok {
+		f = append(f, "--username", "--password")
+	}
+	if _, ok := requireClientAndCACertificate[protocol]; ok {
+		f = append(f, "--client-cert", "--ca-cert")
+	}
+	if _, ok := requireTunneledCACertificate[protocol]; ok {
+		f = append(f, "--tunnel-ca-cert")
+	}
+	return
+}
+
+// protocolHelp describes the PROTOCOL positional argument for -h, which
+// otherwise names it in the usage line without saying what may go there.
+func protocolHelp() string {
+	var b strings.Builder
+	b.WriteString("PROTOCOL selects the authentication method, each needing the flags\nlisted beside it:\n\n")
+	for _, p := range authProtocols {
+		fmt.Fprintf(&b, "  %-24s%s\n", p, strings.Join(protocolFlags(p), ", "))
+	}
+	b.WriteString("\nA missing --password is prompted for when stdin is a terminal, and\n--insecure makes the CA flags optional.")
+	return b.String()
 }
 
 // expectedLayers names the TLS handshakes a protocol performs, so that a layer
